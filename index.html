@@ -905,8 +905,10 @@
 
         // player dot if available
         if(player.lastKnown){
-          const px = (mod(Math.round(player.lastKnown.x), WORLD.size) + 0.5) * sx;
-          const py = (mod(Math.round(player.lastKnown.z), WORLD.size) + 0.5) * sy;
+          const cx = mod(Math.round(worldToCell(player.lastKnown.x)), WORLD.size);
+          const cy = mod(Math.round(worldToCell(player.lastKnown.z)), WORLD.size);
+          const px = (cx + 0.5) * sx;
+          const py = (cy + 0.5) * sy;
           miniCtx.beginPath();
           miniCtx.arc(px, py, 3.2, 0, Math.PI*2);
           miniCtx.fillStyle = "rgba(251,113,133,.95)";
@@ -1302,14 +1304,22 @@
         scene: null,
         camera: null,
         light: null,
+        sky: null,
         clock: new THREE.Clock(),
         running: false,
         queuedChunks: [],
         maxBuildPerFrame: 2
       };
 
+      // Explore scale tuning:
+      // - Each map cell corresponds to this many world units in X/Z.
+      // - Elevation is derived from height above BEACH level, so coasts are flush with water.
+      const CELL_SCALE = 24; // makes the continent feel massive
+      const BEACH_LEVEL = 0.38;
+      const HEIGHT_SCALE = 120;
+
       const chunks = {
-        size: 32,
+        size: 32, // cells per chunk axis
         viewRadius: 3, // 7x7
         unloadDist: 10,
         map: new Map(),
@@ -1335,15 +1345,26 @@
         }
       };
 
-      function sampleHeightWorld(wx, wy){
-        // bilinear height in world units (y)
+      const cellToWorld = (c) => c * CELL_SCALE;
+      const worldToCell = (u) => u / CELL_SCALE;
+
+      function heightToElevationUnits(height01, biome){
+        if(biome === BIOME.OCEAN || biome === BIOME.BEACH) return 0;
+        const t = clamp01((height01 - BEACH_LEVEL) / (1 - BEACH_LEVEL));
+        return t * HEIGHT_SCALE;
+      }
+
+      function sampleElevationAtWorld(wxUnits, wzUnits){
+        // bilinear height -> elevation in world units (y)
         const s = WORLD.size;
-        const x0 = Math.floor(wx);
-        const y0 = Math.floor(wy);
+        const cx = worldToCell(wxUnits);
+        const cy = worldToCell(wzUnits);
+        const x0 = Math.floor(cx);
+        const y0 = Math.floor(cy);
         const x1 = x0 + 1;
         const y1 = y0 + 1;
-        const tx = wx - x0;
-        const ty = wy - y0;
+        const tx = cx - x0;
+        const ty = cy - y0;
         const h00 = WORLD.heightmap[idxOf(x0, y0)];
         const h10 = WORLD.heightmap[idxOf(x1, y0)];
         const h01 = WORLD.heightmap[idxOf(x0, y1)];
@@ -1351,15 +1372,13 @@
         const h0 = h00*(1-tx) + h10*tx;
         const h1 = h01*(1-tx) + h11*tx;
         const h = (h0*(1-ty) + h1*ty);
-        // oceans are water plane at 0
-        const b = WORLD.biomemap[idxOf(Math.round(wx), Math.round(wy))];
-        const base = (b === BIOME.OCEAN) ? 0 : h;
-        return base * 40;
+        const b = WORLD.biomemap[idxOf(Math.round(cx), Math.round(cy))];
+        return heightToElevationUnits(h, b);
       }
 
-      function biomeAt(wx, wy){
-        const x = Math.floor(wx);
-        const y = Math.floor(wy);
+      function biomeAtWorld(wxUnits, wzUnits){
+        const x = Math.floor(worldToCell(wxUnits));
+        const y = Math.floor(worldToCell(wzUnits));
         return WORLD.biomemap[idxOf(x, y)];
       }
 
@@ -1373,10 +1392,10 @@
         explore.renderer = renderer;
 
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x88c7ff, 0.012);
+        scene.fog = new THREE.FogExp2(0x88c7ff, 0.0022);
         explore.scene = scene;
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 50000);
         explore.camera = camera;
 
         const ambient = new THREE.AmbientLight(0xffffff, 0.45);
@@ -1396,7 +1415,7 @@
         explore.light = sun;
 
         // Sky sphere with a tiny gradient shader
-        const skyGeo = new THREE.SphereGeometry(900, 32, 16);
+        const skyGeo = new THREE.SphereGeometry(8000, 32, 16);
         const skyMat = new THREE.ShaderMaterial({
           side: THREE.BackSide,
           uniforms: {
@@ -1422,7 +1441,9 @@
             }
           `
         });
-        scene.add(new THREE.Mesh(skyGeo, skyMat));
+        const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+        scene.add(skyMesh);
+        explore.sky = skyMesh;
 
         window.addEventListener("resize", () => {
           if(!explore.renderer) return;
@@ -1472,7 +1493,10 @@
           transparent: true,
           opacity: 0.55,
           roughness: 0.2,
-          metalness: 0.0
+          metalness: 0.0,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1
         }),
         trunkMat: new THREE.MeshStandardMaterial({ color: 0x5b4632, roughness: 1.0 }),
         leafMat: new THREE.MeshStandardMaterial({ color: 0x2d7a3a, roughness: 1.0 }),
@@ -1486,27 +1510,30 @@
       };
 
       function buildChunk(cx, cy){
-        const cs = chunks.size;
-        const baseX = cx * cs;
-        const baseY = cy * cs;
-        const geo = new THREE.PlaneGeometry(cs, cs, cs, cs);
+        const cs = chunks.size; // cells
+        const chunkWorld = cs * CELL_SCALE;
+        const baseCellX = cx * cs;
+        const baseCellY = cy * cs;
+        const baseWorldX = baseCellX * CELL_SCALE;
+        const baseWorldZ = baseCellY * CELL_SCALE;
+
+        const geo = new THREE.PlaneGeometry(chunkWorld, chunkWorld, cs, cs);
         geo.rotateX(-Math.PI/2);
         geo.userData._chunkOwned = true;
 
         const pos = geo.attributes.position;
         const colors = new Float32Array(pos.count * 3);
         const tmp = new THREE.Color();
-        let hasOcean = false;
+        let oceanCells = 0;
 
         for(let iz=0;iz<=cs;iz++){
           for(let ix=0;ix<=cs;ix++){
             const v = iz*(cs+1) + ix;
-            const wx = baseX + ix;
-            const wy = baseY + iz;
-            const bi = biomeAt(wx, wy);
-            if(bi === BIOME.OCEAN) hasOcean = true;
-            const h = (bi === BIOME.OCEAN) ? 0 : (WORLD.heightmap[idxOf(wx, wy)] * 40);
-            pos.setY(v, h);
+            const cellX = baseCellX + ix;
+            const cellY = baseCellY + iz;
+            const bi = WORLD.biomemap[idxOf(cellX, cellY)];
+            const h01 = WORLD.heightmap[idxOf(cellX, cellY)];
+            pos.setY(v, heightToElevationUnits(h01, bi));
             const c = BIOME_COLORS[bi] || [1,0,1];
             tmp.setRGB(c[0], c[1], c[2]);
             colors[v*3+0] = tmp.r;
@@ -1520,17 +1547,42 @@
         const mesh = new THREE.Mesh(geo, shared.terrainMat);
         mesh.receiveShadow = true;
         mesh.castShadow = false;
-        mesh.position.set(baseX + cs/2, 0, baseY + cs/2);
+        mesh.position.set(baseWorldX + chunkWorld/2, 0, baseWorldZ + chunkWorld/2);
 
-        // optional water plane
+        // optional water mesh (ocean-only quads so it doesn't cover land)
         let water = null;
-        if(hasOcean){
-          const wgeo = new THREE.PlaneGeometry(cs, cs, 1, 1);
-          wgeo.rotateX(-Math.PI/2);
-          wgeo.userData._chunkOwned = true;
-          water = new THREE.Mesh(wgeo, shared.waterMat);
-          water.position.set(baseX + cs/2, 0.02, baseY + cs/2);
-          water.receiveShadow = true;
+        {
+          const positions = [];
+          const indices = [];
+          let vCount = 0;
+          const half = chunkWorld / 2;
+          for(let y=0;y<cs;y++){
+            for(let x=0;x<cs;x++){
+              const cellX = baseCellX + x;
+              const cellY = baseCellY + y;
+              const b = WORLD.biomemap[idxOf(cellX, cellY)];
+              if(b !== BIOME.OCEAN) continue;
+              oceanCells++;
+              const x0 = -half + x * CELL_SCALE;
+              const z0 = -half + y * CELL_SCALE;
+              const x1 = x0 + CELL_SCALE;
+              const z1 = z0 + CELL_SCALE;
+              // 4 vertices
+              positions.push(x0, 0, z0,  x1, 0, z0,  x1, 0, z1,  x0, 0, z1);
+              indices.push(vCount+0, vCount+1, vCount+2,  vCount+0, vCount+2, vCount+3);
+              vCount += 4;
+            }
+          }
+          if(oceanCells > 0){
+            const wgeo = new THREE.BufferGeometry();
+            wgeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+            wgeo.setIndex(indices);
+            wgeo.computeVertexNormals();
+            wgeo.userData._chunkOwned = true;
+            water = new THREE.Mesh(wgeo, shared.waterMat);
+            water.position.copy(mesh.position);
+            water.receiveShadow = true;
+          }
         }
 
         // scatter props
@@ -1552,15 +1604,17 @@
 
         for(let y=0;y<cs;y++){
           for(let x=0;x<cs;x++){
-            const wx = baseX + x + 0.5;
-            const wy = baseY + y + 0.5;
-            const b = biomeAt(wx, wy);
+            const cellX = baseCellX + x + 0.5;
+            const cellY = baseCellY + y + 0.5;
+            const wx = cellToWorld(cellX);
+            const wz = cellToWorld(cellY);
+            const b = biomeAtWorld(wx, wz);
             if(b === BIOME.FOREST){
               if(randTree() < 0.08){
-                const hh = sampleHeightWorld(wx, wy);
+                const hh = sampleElevationAtWorld(wx, wz);
                 const yaw = randTree() * Math.PI * 2;
                 quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
-                posV.set(wx, hh, wy);
+                posV.set(wx, hh, wz);
                 // trunk
                 scale.set(1, 0.9 + randTree()*0.5, 1);
                 mat4.compose(posV.clone().add(new THREE.Vector3(0, 0.6*scale.y, 0)), quat, new THREE.Vector3(1, scale.y, 1));
@@ -1577,11 +1631,11 @@
               }
             }else if(b === BIOME.DESERT){
               if(randRock() < 0.05){
-                const hh = sampleHeightWorld(wx, wy);
+                const hh = sampleElevationAtWorld(wx, wz);
                 const yaw = randRock() * Math.PI * 2;
                 quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
                 const s = 0.5 + randRock()*0.9;
-                posV.set(wx, hh + 0.15*s, wy);
+                posV.set(wx, hh + 0.15*s, wz);
                 mat4.compose(posV, quat, new THREE.Vector3(s, s, s));
                 if(rCount < rock.count) rock.setMatrixAt(rCount, mat4);
                 rCount++;
@@ -1616,9 +1670,9 @@
       }
 
       function ensureChunksAroundPlayer(){
-        const cs = chunks.size;
-        const pcx = Math.floor(player.pos.x / cs);
-        const pcy = Math.floor(player.pos.z / cs);
+        const chunkWorld = chunks.size * CELL_SCALE;
+        const pcx = Math.floor(player.pos.x / chunkWorld);
+        const pcy = Math.floor(player.pos.z / chunkWorld);
 
         const needed = new Set();
         for(let dy=-chunks.viewRadius;dy<=chunks.viewRadius;dy++){
@@ -1673,25 +1727,27 @@
       }
 
       function updatePlayer(dt){
-        const speed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 16 : 8;
+        const speed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 20 : 10;
         let moveX = 0, moveZ = 0;
-        if(keys.has("KeyW")) moveZ -= 1;
-        if(keys.has("KeyS")) moveZ += 1;
+        if(keys.has("KeyW")) moveZ += 1;
+        if(keys.has("KeyS")) moveZ -= 1;
         if(keys.has("KeyA")) moveX -= 1;
         if(keys.has("KeyD")) moveX += 1;
         const len = Math.hypot(moveX, moveZ) || 1;
         moveX /= len; moveZ /= len;
 
-        const sin = Math.sin(player.yaw);
-        const cos = Math.cos(player.yaw);
-        const vx = (moveX * cos - moveZ * sin) * speed;
-        const vz = (moveX * sin + moveZ * cos) * speed;
-
+        // FPS-style movement relative to camera yaw
+        const forwardX = -Math.sin(player.yaw);
+        const forwardZ = -Math.cos(player.yaw);
+        const rightX = Math.cos(player.yaw);
+        const rightZ = -Math.sin(player.yaw);
+        const vx = (rightX * moveX + forwardX * moveZ) * speed;
+        const vz = (rightZ * moveX + forwardZ * moveZ) * speed;
         player.pos.x += vx * dt;
         player.pos.z += vz * dt;
 
         // Gravity toward terrain
-        const groundY = sampleHeightWorld(player.pos.x, player.pos.z) + player.eyeHeight;
+        const groundY = sampleElevationAtWorld(player.pos.x, player.pos.z) + player.eyeHeight;
         const g = 28;
         player.velY -= g * dt;
         player.pos.y += player.velY * dt;
@@ -1716,12 +1772,15 @@
         }
 
         updatePlayer(dt);
+        if(explore.sky) explore.sky.position.copy(player.pos);
         ensureChunksAroundPlayer();
         buildChunkQueueStep();
 
-        const b = biomeAt(player.pos.x, player.pos.z);
+        const b = biomeAtWorld(player.pos.x, player.pos.z);
         hudBiomeEl.textContent = BIOME_NAMES[b] || "—";
-        hudCoordsEl.textContent = `x ${mod(Math.floor(player.pos.x), WORLD.size)} · y ${mod(Math.floor(player.pos.z), WORLD.size)}`;
+        const cx = mod(Math.floor(worldToCell(player.pos.x)), WORLD.size);
+        const cy = mod(Math.floor(worldToCell(player.pos.z)), WORLD.size);
+        hudCoordsEl.textContent = `x ${cx} · y ${cy}`;
 
         // minimap dot
         requestMinimapDraw();
@@ -1749,7 +1808,9 @@
         player.yaw = 0;
         player.pitch = 0;
         player.velY = 0;
-        player.pos.set(wx, sampleHeightWorld(wx, wy) + player.eyeHeight, wy);
+        const startX = cellToWorld(wx);
+        const startZ = cellToWorld(wy);
+        player.pos.set(startX, sampleElevationAtWorld(startX, startZ) + player.eyeHeight, startZ);
         player.lastKnown = { x: player.pos.x, z: player.pos.z };
 
         lockprompt.style.display = "block";
@@ -1769,8 +1830,8 @@
 
         // Center map on player position
         if(player.lastKnown){
-          const cx = player.lastKnown.x;
-          const cy = player.lastKnown.z;
+          const cx = worldToCell(player.lastKnown.x);
+          const cy = worldToCell(player.lastKnown.z);
           cam.panX = window.innerWidth * 0.5 - cx * cam.zoom;
           cam.panY = window.innerHeight * 0.5 - cy * cam.zoom;
         }
