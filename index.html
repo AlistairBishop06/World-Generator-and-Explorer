@@ -1,0 +1,1800 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>Procedural World Builder</title>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js"
+        }
+      }
+    </script>
+
+    <style>
+      :root{
+        --bg: #0b1220;
+        --panel: rgba(15, 23, 42, 0.92);
+        --panel2: rgba(2, 6, 23, 0.7);
+        --stroke: rgba(148, 163, 184, 0.18);
+        --stroke2: rgba(148, 163, 184, 0.28);
+        --text: #e6edf7;
+        --muted: rgba(230, 237, 247, 0.72);
+        --brand: #5eead4;
+        --brand2: #60a5fa;
+        --danger: #fb7185;
+        --shadow: 0 14px 40px rgba(0,0,0,.35);
+        --radius: 14px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body{
+        margin:0;
+        font-family: var(--sans);
+        color: var(--text);
+        background: radial-gradient(1200px 900px at 20% -10%, rgba(96,165,250,.22), transparent 60%),
+                    radial-gradient(900px 700px at 100% 0%, rgba(94,234,212,.15), transparent 65%),
+                    radial-gradient(1000px 800px at 50% 110%, rgba(251,113,133,.10), transparent 55%),
+                    var(--bg);
+        overflow:hidden;
+        user-select: none;
+      }
+
+      #map-canvas, #three-canvas{
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display:block;
+      }
+      #three-canvas{ display:none; }
+
+      /* Sidebar */
+      #toolbar{
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        width: 288px;
+        bottom: 86px;
+        background: var(--panel);
+        border: 1px solid var(--stroke);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow:hidden;
+        display:flex;
+        flex-direction: column;
+        backdrop-filter: blur(10px);
+      }
+      #toolbar .head{
+        padding: 14px 14px 10px 14px;
+        border-bottom: 1px solid var(--stroke);
+        display:flex;
+        gap:10px;
+        align-items:center;
+      }
+      .logo{
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        display:grid;
+        place-items:center;
+        background: linear-gradient(135deg, rgba(94,234,212,.25), rgba(96,165,250,.22));
+        border: 1px solid var(--stroke);
+      }
+      .title{
+        line-height: 1.1;
+      }
+      .title b{ display:block; font-weight: 700; letter-spacing: .2px; }
+      .title small{ color: var(--muted); display:block; margin-top: 2px; font-size: 12px; }
+
+      .toolgrid{
+        padding: 12px;
+        display:grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }
+      .toolbtn{
+        background: rgba(2, 6, 23, 0.55);
+        border: 1px solid var(--stroke);
+        border-radius: 12px;
+        padding: 10px 10px;
+        color: var(--text);
+        cursor: pointer;
+        transition: transform .06s ease, border-color .12s ease, background .12s ease;
+        display:flex;
+        flex-direction: column;
+        gap: 6px;
+        align-items: flex-start;
+        min-height: 64px;
+      }
+      .toolbtn:hover{ border-color: var(--stroke2); background: rgba(2, 6, 23, 0.65); }
+      .toolbtn:active{ transform: translateY(1px); }
+      .toolbtn[data-active="1"]{
+        border-color: rgba(94,234,212,.55);
+        box-shadow: 0 0 0 2px rgba(94,234,212,.18) inset;
+      }
+      .toolbtn .icon{
+        font-size: 16px;
+        width: 28px;
+        height: 28px;
+        border-radius: 10px;
+        display:grid;
+        place-items:center;
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid var(--stroke);
+      }
+      .toolbtn .label{
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .panel{
+        margin: 0 12px 12px 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(2, 6, 23, 0.45);
+      }
+      .panel h3{
+        margin:0 0 10px 0;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .16em;
+        color: rgba(230,237,247,.72);
+        text-transform: uppercase;
+      }
+      .row{
+        display:flex;
+        align-items:center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 8px 0;
+      }
+      .row label{
+        font-size: 13px;
+        color: var(--muted);
+      }
+      input[type="range"]{
+        width: 100%;
+        accent-color: var(--brand);
+      }
+      .badge{
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--stroke);
+        background: rgba(15,23,42,.6);
+        color: rgba(230,237,247,.85);
+      }
+      .swatches{
+        display:grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+      .swatch{
+        height: 30px;
+        border-radius: 10px;
+        border: 1px solid var(--stroke);
+        cursor:pointer;
+        position: relative;
+        transition: transform .06s ease, border-color .12s ease;
+      }
+      .swatch:hover{ border-color: var(--stroke2); }
+      .swatch:active{ transform: translateY(1px); }
+      .swatch[data-active="1"]{
+        outline: 2px solid rgba(96,165,250,.65);
+        outline-offset: 1px;
+      }
+      .hint{
+        font-size: 12px;
+        color: rgba(230,237,247,.65);
+        line-height: 1.4;
+      }
+
+      /* Minimap */
+      #minimap-wrap{
+        position: fixed;
+        right: 14px;
+        bottom: 86px;
+        width: 220px;
+        height: 220px;
+        padding: 10px;
+        border-radius: var(--radius);
+        background: var(--panel2);
+        border: 1px solid var(--stroke);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(8px);
+        display:flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #minimap{
+        width: 200px;
+        height: 200px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(2,6,23,.5);
+      }
+      #minimap-title{
+        display:flex;
+        justify-content: space-between;
+        align-items:center;
+        padding: 0 2px;
+        font-size: 12px;
+        color: rgba(230,237,247,.7);
+      }
+      #minimap-title span{ font-family: var(--mono); font-size: 11px; color: rgba(230,237,247,.65); }
+
+      /* Navbar */
+      #navbar{
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 64px;
+        padding: 10px 14px;
+        display:flex;
+        align-items:center;
+        justify-content: space-between;
+        gap: 14px;
+        background: rgba(2,6,23,.92);
+        border-top: 1px solid rgba(148,163,184,.18);
+        backdrop-filter: blur(10px);
+      }
+      #nav-left, #nav-center, #nav-right{
+        display:flex;
+        align-items:center;
+        gap: 12px;
+        min-width: 240px;
+      }
+      #nav-center{ justify-content: center; flex: 1; min-width: 200px; }
+      #nav-right{ justify-content: flex-end; }
+      .chip{
+        padding: 8px 10px;
+        border: 1px solid var(--stroke);
+        border-radius: 12px;
+        background: rgba(15,23,42,.6);
+        display:flex;
+        align-items:center;
+        gap: 10px;
+      }
+      .chip b{ font-size: 12px; letter-spacing: .02em; }
+      .chip small{ font-size: 11px; color: rgba(230,237,247,.65); font-family: var(--mono); }
+      .btn{
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(15,23,42,.6);
+        color: var(--text);
+        cursor:pointer;
+        transition: transform .06s ease, border-color .12s ease, background .12s ease;
+        font-weight: 650;
+      }
+      .btn:hover{ border-color: var(--stroke2); background: rgba(15,23,42,.72); }
+      .btn:active{ transform: translateY(1px); }
+      .btn.primary{
+        border-color: rgba(94,234,212,.55);
+        box-shadow: 0 0 0 2px rgba(94,234,212,.18) inset;
+      }
+      #coords{
+        font-family: var(--mono);
+        font-size: 12px;
+        color: rgba(230,237,247,.8);
+      }
+      #peg{
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        border: 1px solid var(--stroke);
+        background: linear-gradient(135deg, rgba(96,165,250,.25), rgba(94,234,212,.20));
+        display:grid;
+        place-items:center;
+        cursor: grab;
+        box-shadow: 0 10px 28px rgba(0,0,0,.30);
+        transition: transform .06s ease;
+      }
+      #peg:active{ cursor: grabbing; transform: translateY(1px); }
+
+      /* Explore HUD */
+      #hud{
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        display:none;
+      }
+      #backbtn{
+        pointer-events: auto;
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(2,6,23,.75);
+        color: var(--text);
+        cursor:pointer;
+        backdrop-filter: blur(10px);
+      }
+      #crosshair{
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        transform: translate(-50%, -50%);
+      }
+      #crosshair:before, #crosshair:after{
+        content:"";
+        position:absolute;
+        left: 50%;
+        top: 50%;
+        background: rgba(255,255,255,.85);
+        transform: translate(-50%, -50%);
+        border-radius: 2px;
+      }
+      #crosshair:before{ width: 14px; height: 2px; }
+      #crosshair:after{ width: 2px; height: 14px; }
+      #hud-info{
+        position: fixed;
+        left: 14px;
+        bottom: 86px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(2,6,23,.70);
+        backdrop-filter: blur(10px);
+        font-family: var(--mono);
+        font-size: 12px;
+        color: rgba(230,237,247,.85);
+        display:flex;
+        gap: 10px;
+        align-items:center;
+      }
+      #hud-info b{ font-family: var(--sans); font-size: 12px; }
+      #lockprompt{
+        pointer-events: auto;
+        position: fixed;
+        left: 50%;
+        bottom: 92px;
+        transform: translateX(-50%);
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(96,165,250,.35);
+        background: rgba(2,6,23,.65);
+        backdrop-filter: blur(10px);
+        color: rgba(230,237,247,.9);
+        display:none;
+      }
+      #lockprompt kbd{
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 8px;
+        border: 1px solid rgba(148,163,184,.25);
+        background: rgba(15,23,42,.75);
+      }
+
+      /* Toast */
+      #toast{
+        position: fixed;
+        left: 50%;
+        top: 16px;
+        transform: translateX(-50%);
+        padding: 10px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(148,163,184,.22);
+        background: rgba(2,6,23,.72);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+        color: rgba(230,237,247,.92);
+        font-size: 13px;
+        display:none;
+        pointer-events: none;
+      }
+
+      /* Hide UI in explore */
+      body[data-mode="explore"] #toolbar,
+      body[data-mode="explore"] #navbar{
+        display:none;
+      }
+      body[data-mode="explore"] #minimap-wrap{
+        bottom: 14px;
+        right: 14px;
+        width: 220px;
+        height: 220px;
+        pointer-events: auto;
+      }
+      body[data-mode="explore"] #minimap-title{ display:none; }
+      body[data-mode="explore"] #minimap-wrap{
+        background: rgba(2,6,23,.55);
+      }
+    </style>
+  </head>
+  <body data-mode="map">
+    <canvas id="map-canvas"></canvas>
+    <canvas id="three-canvas"></canvas>
+
+    <div id="toolbar" aria-label="Tools">
+      <div class="head">
+        <div class="logo" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M3 12c4.5-6.5 13.5-6.5 18 0-4.5 6.5-13.5 6.5-18 0Z" stroke="rgba(230,237,247,.9)" stroke-width="1.6"/>
+            <path d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2Z" stroke="rgba(94,234,212,.95)" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <div class="title">
+          <b>World Builder</b>
+          <small>Map editor + first-person explore</small>
+        </div>
+      </div>
+
+      <div class="toolgrid" id="toolgrid"></div>
+
+      <div class="panel">
+        <h3>Brush</h3>
+        <div class="row">
+          <label for="brush">Radius</label>
+          <span class="badge" id="brushBadge">16</span>
+        </div>
+        <input id="brush" type="range" min="1" max="50" step="1" value="16" />
+        <div class="hint" style="margin-top:10px">
+          Pan: <span class="badge">MMB drag</span> or <span class="badge">Space + drag</span><br/>
+          Zoom: <span class="badge">Wheel</span> (toward cursor)
+        </div>
+      </div>
+
+      <div class="panel" id="biomePanel" style="display:none">
+        <h3>Biome</h3>
+        <div class="swatches" id="swatches"></div>
+        <div class="hint" style="margin-top:10px">Paint overrides the auto-derived biome. Use ✕ to erase overrides.</div>
+      </div>
+
+      <div class="panel">
+        <h3>World</h3>
+        <div class="row"><label>Size</label><span class="badge" id="sizeBadge">512×512</span></div>
+        <div class="row"><label>Seed</label><span class="badge" id="seedBadge">—</span></div>
+      </div>
+    </div>
+
+    <div id="minimap-wrap">
+      <div id="minimap-title"><b style="font-weight:700; color:rgba(230,237,247,.8)">Minimap</b><span id="minimapHint">click to jump</span></div>
+      <canvas id="minimap" width="200" height="200"></canvas>
+    </div>
+
+    <div id="navbar">
+      <div id="nav-left">
+        <div class="chip">
+          <div>
+            <b id="toolName">Raise</b><br/>
+            <small>Brush <span id="brushSmall">16</span></small>
+          </div>
+          <div style="width:140px">
+            <input id="brushSmallRange" type="range" min="1" max="50" step="1" value="16" />
+          </div>
+        </div>
+      </div>
+      <div id="nav-center">
+        <div id="peg" title="Drag to place character">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M12 12.2c1.9 0 3.4-1.6 3.4-3.5S13.9 5.2 12 5.2 8.6 6.8 8.6 8.7 10.1 12.2 12 12.2Z" fill="rgba(230,237,247,.92)"/>
+            <path d="M6.5 19.2c1.4-3.6 3.7-5.4 5.5-5.4s4.1 1.8 5.5 5.4" stroke="rgba(230,237,247,.92)" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M10 21.6h4" stroke="rgba(94,234,212,.95)" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+      <div id="nav-right">
+        <div id="coords">x: — y: —</div>
+        <button class="btn primary" id="newWorld">New World</button>
+      </div>
+    </div>
+
+    <div id="hud">
+      <button id="backbtn">← Back to Map</button>
+      <div id="crosshair"></div>
+      <div id="hud-info"><b id="hudBiome">—</b><span id="hudCoords">—</span></div>
+      <div id="lockprompt">Click to lock pointer · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> sprint</div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script type="module">
+      import * as THREE from "three";
+
+      // -----------------------------
+      // World + generation
+      // -----------------------------
+      const BIOME = Object.freeze({
+        OCEAN: 0,
+        BEACH: 1,
+        PLAINS: 2,
+        FOREST: 3,
+        DESERT: 4,
+        TUNDRA: 5,
+        MOUNTAIN: 6,
+        SNOW_CAP: 7
+      });
+
+      const BIOME_NAMES = [
+        "Ocean",
+        "Beach",
+        "Plains",
+        "Forest",
+        "Desert",
+        "Tundra",
+        "Mountain",
+        "Snow Cap"
+      ];
+
+      const BIOME_COLORS = [
+        [0x1a/255, 0x6b/255, 0x9e/255], // OCEAN
+        [0xe8/255, 0xd5/255, 0xa3/255], // BEACH
+        [0x7e/255, 0xc8/255, 0x50/255], // PLAINS
+        [0x2d/255, 0x7a/255, 0x3a/255], // FOREST
+        [0xe8/255, 0xc8/255, 0x7a/255], // DESERT
+        [0xa8/255, 0xc8/255, 0xb8/255], // TUNDRA
+        [0x8a/255, 0x7a/255, 0x6a/255], // MOUNTAIN
+        [1, 1, 1] // SNOW_CAP
+      ];
+
+      const WORLD = {
+        size: 512,
+        heightmap: new Float32Array(512 * 512),
+        moisture: new Float32Array(512 * 512),
+        biomemap: new Uint8Array(512 * 512),
+        override: new Int16Array(512 * 512),
+        seed: 1
+      };
+      WORLD.override.fill(-1);
+
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const mod = (n, m) => ((n % m) + m) % m;
+      const idxOf = (x, y) => (mod(y, WORLD.size) * WORLD.size + mod(x, WORLD.size));
+
+      // Compact seeded RNG (Mulberry32)
+      function mulberry32(seed){
+        let t = seed >>> 0;
+        return function(){
+          t += 0x6D2B79F5;
+          let x = Math.imul(t ^ (t >>> 15), 1 | t);
+          x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+          return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      // Simplex noise (2D), compact (~60 lines)
+      // Based on Stefan Gustavson's simplex noise ideas, written from scratch.
+      function makeSimplex2(seed){
+        const rand = mulberry32(seed);
+        const perm = new Uint8Array(512);
+        const p = new Uint8Array(256);
+        for(let i=0;i<256;i++) p[i] = i;
+        for(let i=255;i>0;i--){
+          const j = (rand() * (i+1)) | 0;
+          const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+        }
+        for(let i=0;i<512;i++) perm[i] = p[i & 255];
+        const grad = [
+          [ 1, 1], [-1, 1], [ 1,-1], [-1,-1],
+          [ 1, 0], [-1, 0], [ 0, 1], [ 0,-1]
+        ];
+        const F2 = 0.5 * (Math.sqrt(3) - 1);
+        const G2 = (3 - Math.sqrt(3)) / 6;
+        return function(xin, yin){
+          const s = (xin + yin) * F2;
+          const i = Math.floor(xin + s);
+          const j = Math.floor(yin + s);
+          const t = (i + j) * G2;
+          const X0 = i - t, Y0 = j - t;
+          const x0 = xin - X0, y0 = yin - Y0;
+          const i1 = x0 > y0 ? 1 : 0;
+          const j1 = x0 > y0 ? 0 : 1;
+          const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+          const x2 = x0 - 1 + 2*G2, y2 = y0 - 1 + 2*G2;
+          const ii = i & 255, jj = j & 255;
+          const gi0 = perm[ii + perm[jj]] & 7;
+          const gi1 = perm[ii + i1 + perm[jj + j1]] & 7;
+          const gi2 = perm[ii + 1 + perm[jj + 1]] & 7;
+          let n0=0, n1=0, n2=0;
+          let t0 = 0.5 - x0*x0 - y0*y0;
+          if(t0 > 0){ t0 *= t0; n0 = t0*t0*(grad[gi0][0]*x0 + grad[gi0][1]*y0); }
+          let t1 = 0.5 - x1*x1 - y1*y1;
+          if(t1 > 0){ t1 *= t1; n1 = t1*t1*(grad[gi1][0]*x1 + grad[gi1][1]*y1); }
+          let t2 = 0.5 - x2*x2 - y2*y2;
+          if(t2 > 0){ t2 *= t2; n2 = t2*t2*(grad[gi2][0]*x2 + grad[gi2][1]*y2); }
+          // scale to roughly [-1,1]
+          return 70 * (n0 + n1 + n2);
+        };
+      }
+
+      function fbm2(noise2, x, y, octaves, lacunarity=2.0, gain=0.5){
+        let amp = 0.5;
+        let freq = 1.0;
+        let sum = 0.0;
+        let norm = 0.0;
+        for(let o=0;o<octaves;o++){
+          sum += amp * noise2(x*freq, y*freq);
+          norm += amp;
+          freq *= lacunarity;
+          amp *= gain;
+        }
+        return sum / (norm || 1);
+      }
+
+      function continentalFalloff(x, y){
+        const cx = (x / (WORLD.size-1)) * 2 - 1;
+        const cy = (y / (WORLD.size-1)) * 2 - 1;
+        const d = Math.sqrt(cx*cx + cy*cy);
+        const t = clamp01((d - 0.15) / 0.95);
+        return 1 - (t*t*(3 - 2*t)); // smoothstep-ish
+      }
+
+      function deriveBiome(height, moisture, y){
+        const lat = y / (WORLD.size - 1);
+        const isHighLat = (lat < 0.20) || (lat > 0.80);
+        if(height < 0.35) return BIOME.OCEAN;
+        if(height < 0.38) return BIOME.BEACH;
+        if(height > 0.85) return BIOME.SNOW_CAP;
+        if(height > 0.70) return BIOME.MOUNTAIN;
+        if(isHighLat) return BIOME.TUNDRA;
+        if(moisture < 0.40) return BIOME.DESERT;
+        if(moisture < 0.62) return BIOME.PLAINS;
+        return BIOME.FOREST;
+      }
+
+      function generateWorld(seed){
+        WORLD.seed = seed >>> 0;
+        const noiseH = makeSimplex2(WORLD.seed ^ 0xA53A);
+        const noiseM = makeSimplex2(WORLD.seed ^ 0x19F3);
+        const s = WORLD.size;
+        for(let y=0;y<s;y++){
+          for(let x=0;x<s;x++){
+            const i = y*s + x;
+            const nx = x / s - 0.5;
+            const ny = y / s - 0.5;
+            const h = fbm2(noiseH, nx*2.3, ny*2.3, 6);
+            const m = fbm2(noiseM, nx*2.0 + 42.3, ny*2.0 - 11.7, 4);
+            let height = (h * 0.5 + 0.5);
+            let moisture = (m * 0.5 + 0.5);
+            height = clamp01(height);
+            moisture = clamp01(moisture);
+            // continental shaping: lower near edges into ocean
+            height *= continentalFalloff(x, y);
+            // contrast
+            height = clamp01(Math.pow(height, 1.1));
+            moisture = clamp01(0.15 + 0.85 * Math.pow(moisture, 1.05));
+            WORLD.heightmap[i] = height;
+            WORLD.moisture[i] = moisture;
+            WORLD.override[i] = -1;
+          }
+        }
+        rederiveBiomesFull();
+      }
+
+      function rederiveBiomesFull(){
+        const s = WORLD.size;
+        for(let y=0;y<s;y++){
+          for(let x=0;x<s;x++){
+            const i = y*s + x;
+            const b = (WORLD.override[i] >= 0) ? WORLD.override[i] : deriveBiome(WORLD.heightmap[i], WORLD.moisture[i], y);
+            WORLD.biomemap[i] = b;
+          }
+        }
+      }
+
+      function rederiveBiomesRegion(x0, y0, x1, y1){
+        const s = WORLD.size;
+        const minX = Math.max(0, Math.min(x0, x1));
+        const minY = Math.max(0, Math.min(y0, y1));
+        const maxX = Math.min(s-1, Math.max(x0, x1));
+        const maxY = Math.min(s-1, Math.max(y0, y1));
+        for(let y=minY;y<=maxY;y++){
+          for(let x=minX;x<=maxX;x++){
+            const i = y*s + x;
+            const b = (WORLD.override[i] >= 0) ? WORLD.override[i] : deriveBiome(WORLD.heightmap[i], WORLD.moisture[i], y);
+            WORLD.biomemap[i] = b;
+          }
+        }
+        return { minX, minY, maxX, maxY };
+      }
+
+      // -----------------------------
+      // Map rendering (offscreen texture + camera)
+      // -----------------------------
+      const mapCanvas = document.getElementById("map-canvas");
+      const mapCtx = mapCanvas.getContext("2d", { alpha: false });
+      const miniCanvas = document.getElementById("minimap");
+      const miniCtx = miniCanvas.getContext("2d", { alpha: true });
+      const toastEl = document.getElementById("toast");
+      const seedBadge = document.getElementById("seedBadge");
+      const sizeBadge = document.getElementById("sizeBadge");
+      sizeBadge.textContent = `${WORLD.size}×${WORLD.size}`;
+
+      const off = document.createElement("canvas");
+      off.width = WORLD.size;
+      off.height = WORLD.size;
+      const offCtx = off.getContext("2d", { willReadFrequently: true });
+      let offImage = offCtx.createImageData(WORLD.size, WORLD.size);
+
+      const cam = {
+        zoom: 2.0,
+        panX: 40,
+        panY: 40
+      };
+
+      function resizeCanvases(){
+        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        const w = Math.floor(window.innerWidth * dpr);
+        const h = Math.floor(window.innerHeight * dpr);
+        mapCanvas.width = w;
+        mapCanvas.height = h;
+        mapCanvas.style.width = "100vw";
+        mapCanvas.style.height = "100vh";
+        mapCtx.imageSmoothingEnabled = false;
+        requestMapDraw();
+        requestMinimapDraw();
+      }
+      window.addEventListener("resize", resizeCanvases);
+
+      function toast(msg, ms=1800){
+        toastEl.textContent = msg;
+        toastEl.style.display = "block";
+        clearTimeout(toast._t);
+        toast._t = setTimeout(() => (toastEl.style.display = "none"), ms);
+      }
+
+      function biomeToRGBA(biome, height){
+        const c = BIOME_COLORS[biome] || [1, 0, 1];
+        // Subtle depth shading by height; keep oceans readable.
+        const shade = (biome === BIOME.OCEAN) ? (0.78 + 0.22 * height) : (0.62 + 0.38 * height);
+        const r = Math.max(0, Math.min(255, Math.round(c[0] * shade * 255)));
+        const g = Math.max(0, Math.min(255, Math.round(c[1] * shade * 255)));
+        const b = Math.max(0, Math.min(255, Math.round(c[2] * shade * 255)));
+        return [r, g, b, 255];
+      }
+
+      function renderOffscreenFull(){
+        const s = WORLD.size;
+        const data = offImage.data;
+        for(let i=0;i<s*s;i++){
+          const b = WORLD.biomemap[i];
+          const h = WORLD.heightmap[i];
+          const [r,g,b2,a] = biomeToRGBA(b, h);
+          const p = i*4;
+          data[p] = r;
+          data[p+1] = g;
+          data[p+2] = b2;
+          data[p+3] = a;
+        }
+        offCtx.putImageData(offImage, 0, 0);
+      }
+
+      function renderOffscreenRegion(minX, minY, maxX, maxY){
+        const s = WORLD.size;
+        const data = offImage.data;
+        for(let y=minY;y<=maxY;y++){
+          for(let x=minX;x<=maxX;x++){
+            const i = y*s + x;
+            const b = WORLD.biomemap[i];
+            const h = WORLD.heightmap[i];
+            const [r,g,b2,a] = biomeToRGBA(b, h);
+            const p = i*4;
+            data[p] = r;
+            data[p+1] = g;
+            data[p+2] = b2;
+            data[p+3] = a;
+          }
+        }
+        offCtx.putImageData(offImage, 0, 0, minX, minY, (maxX-minX+1), (maxY-minY+1));
+      }
+
+      const mapState = {
+        drawRequested: false,
+        miniRequested: false,
+        hovering: false,
+        hoverWorldX: 0,
+        hoverWorldY: 0,
+        brushRadius: 16,
+        tool: "raise",
+        paintBiome: BIOME.FOREST,
+        isPanning: false,
+        isPainting: false,
+        panStart: null,
+        lastPaint: null,
+        dirtyBBox: null,
+        liveBBox: null,
+        liveScheduled: false,
+        showPegGhost: false,
+        pegGhost: { x: 0, y: 0 },
+        pegDragging: false
+      };
+
+      function cssPointFromEvent(ev){
+        const rect = mapCanvas.getBoundingClientRect();
+        return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+      }
+
+      function screenToWorld(x, y){
+        // x,y in CSS pixels
+        return { wx: (x - cam.panX) / cam.zoom, wy: (y - cam.panY) / cam.zoom };
+      }
+      function worldToScreen(wx, wy){
+        return { x: wx * cam.zoom + cam.panX, y: wy * cam.zoom + cam.panY };
+      }
+
+      function requestMapDraw(){
+        if(mapState.drawRequested) return;
+        mapState.drawRequested = true;
+        requestAnimationFrame(() => {
+          mapState.drawRequested = false;
+          drawMap();
+        });
+      }
+      function requestMinimapDraw(){
+        if(mapState.miniRequested) return;
+        mapState.miniRequested = true;
+        requestAnimationFrame(() => {
+          mapState.miniRequested = false;
+          drawMinimap();
+        });
+      }
+
+      function drawMap(){
+        if(document.body.dataset.mode !== "map") return;
+        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        const w = mapCanvas.width;
+        const h = mapCanvas.height;
+        mapCtx.setTransform(1,0,0,1,0,0);
+        mapCtx.clearRect(0,0,w,h);
+
+        mapCtx.imageSmoothingEnabled = false;
+        mapCtx.setTransform(dpr * cam.zoom, 0, 0, dpr * cam.zoom, dpr * cam.panX, dpr * cam.panY);
+        mapCtx.drawImage(off, 0, 0);
+
+        // overlay brush + peg ghost in screen space
+        mapCtx.setTransform(dpr,0,0,dpr,0,0);
+
+        if(mapState.hovering && (mapState.tool !== "pan")){
+          const { x, y } = worldToScreen(mapState.hoverWorldX, mapState.hoverWorldY);
+          const r = mapState.brushRadius * cam.zoom;
+          mapCtx.beginPath();
+          mapCtx.arc(x, y, r, 0, Math.PI*2);
+          mapCtx.strokeStyle = "rgba(230,237,247,.35)";
+          mapCtx.lineWidth = 1;
+          mapCtx.stroke();
+          mapCtx.fillStyle = "rgba(96,165,250,.08)";
+          mapCtx.fill();
+        }
+
+        if(mapState.showPegGhost){
+          const { x, y } = worldToScreen(mapState.pegGhost.x + 0.5, mapState.pegGhost.y + 0.5);
+          mapCtx.beginPath();
+          mapCtx.arc(x, y, 8, 0, Math.PI*2);
+          mapCtx.fillStyle = "rgba(94,234,212,.45)";
+          mapCtx.fill();
+          mapCtx.strokeStyle = "rgba(94,234,212,.85)";
+          mapCtx.lineWidth = 2;
+          mapCtx.stroke();
+        }
+      }
+
+      function drawMinimap(){
+        miniCtx.setTransform(1,0,0,1,0,0);
+        miniCtx.clearRect(0,0,200,200);
+        // scale world texture down to minimap
+        miniCtx.imageSmoothingEnabled = false;
+        miniCtx.drawImage(off, 0, 0, 200, 200);
+
+        const sx = 200 / WORLD.size;
+        const sy = 200 / WORLD.size;
+
+        // viewport rectangle (map mode only)
+        if(document.body.dataset.mode === "map"){
+          const vw = window.innerWidth / cam.zoom;
+          const vh = window.innerHeight / cam.zoom;
+          const left = (-cam.panX) / cam.zoom;
+          const top = (-cam.panY) / cam.zoom;
+          miniCtx.strokeStyle = "rgba(230,237,247,.75)";
+          miniCtx.lineWidth = 1.5;
+          miniCtx.strokeRect(left * sx, top * sy, vw * sx, vh * sy);
+        }
+
+        // player dot if available
+        if(player.lastKnown){
+          const px = (mod(Math.round(player.lastKnown.x), WORLD.size) + 0.5) * sx;
+          const py = (mod(Math.round(player.lastKnown.z), WORLD.size) + 0.5) * sy;
+          miniCtx.beginPath();
+          miniCtx.arc(px, py, 3.2, 0, Math.PI*2);
+          miniCtx.fillStyle = "rgba(251,113,133,.95)";
+          miniCtx.fill();
+          miniCtx.strokeStyle = "rgba(2,6,23,.75)";
+          miniCtx.lineWidth = 2;
+          miniCtx.stroke();
+        }
+      }
+
+      // -----------------------------
+      // Tools UI wiring
+      // -----------------------------
+      const toolgrid = document.getElementById("toolgrid");
+      const biomePanel = document.getElementById("biomePanel");
+      const swatches = document.getElementById("swatches");
+      const toolNameEl = document.getElementById("toolName");
+      const coordsEl = document.getElementById("coords");
+      const brushRange = document.getElementById("brush");
+      const brushBadge = document.getElementById("brushBadge");
+      const brushSmallRange = document.getElementById("brushSmallRange");
+      const brushSmall = document.getElementById("brushSmall");
+      const newWorldBtn = document.getElementById("newWorld");
+      const pegEl = document.getElementById("peg");
+
+      const TOOL_DEFS = [
+        { id: "raise", icon: "▲", label: "Raise" },
+        { id: "lower", icon: "▼", label: "Lower" },
+        { id: "smooth", icon: "~", label: "Smooth" },
+        { id: "flatten", icon: "▬", label: "Flatten" },
+        { id: "paint", icon: "🎨", label: "Paint" },
+        { id: "erase", icon: "✕", label: "Erase" }
+      ];
+
+      function setTool(id){
+        mapState.tool = id;
+        toolNameEl.textContent = TOOL_DEFS.find(t => t.id === id)?.label || id;
+        for(const btn of toolgrid.querySelectorAll(".toolbtn")){
+          btn.dataset.active = (btn.dataset.tool === id) ? "1" : "0";
+        }
+        biomePanel.style.display = (id === "paint") ? "block" : "none";
+        requestMapDraw();
+      }
+
+      function setBrushRadius(r){
+        mapState.brushRadius = r;
+        brushBadge.textContent = String(r);
+        brushSmall.textContent = String(r);
+        if(Number(brushRange.value) !== r) brushRange.value = String(r);
+        if(Number(brushSmallRange.value) !== r) brushSmallRange.value = String(r);
+        requestMapDraw();
+      }
+
+      for(const t of TOOL_DEFS){
+        const btn = document.createElement("button");
+        btn.className = "toolbtn";
+        btn.dataset.tool = t.id;
+        btn.dataset.active = "0";
+        btn.innerHTML = `<div class="icon">${t.icon}</div><div class="label">${t.label}</div>`;
+        btn.addEventListener("click", () => setTool(t.id));
+        toolgrid.appendChild(btn);
+      }
+
+      function buildSwatches(){
+        swatches.innerHTML = "";
+        const picks = [
+          BIOME.BEACH, BIOME.PLAINS, BIOME.FOREST, BIOME.DESERT,
+          BIOME.TUNDRA, BIOME.MOUNTAIN, BIOME.SNOW_CAP, BIOME.OCEAN
+        ];
+        for(const b of picks){
+          const c = BIOME_COLORS[b];
+          const el = document.createElement("div");
+          el.className = "swatch";
+          el.title = BIOME_NAMES[b];
+          el.style.background = `rgb(${Math.round(c[0]*255)}, ${Math.round(c[1]*255)}, ${Math.round(c[2]*255)})`;
+          el.dataset.active = (b === mapState.paintBiome) ? "1" : "0";
+          el.addEventListener("click", () => {
+            mapState.paintBiome = b;
+            for(const s of swatches.querySelectorAll(".swatch")){
+              s.dataset.active = (s.title === BIOME_NAMES[b]) ? "1" : "0";
+            }
+          });
+          swatches.appendChild(el);
+        }
+      }
+      buildSwatches();
+
+      brushRange.addEventListener("input", () => setBrushRadius(Number(brushRange.value)));
+      brushSmallRange.addEventListener("input", () => setBrushRadius(Number(brushSmallRange.value)));
+
+      newWorldBtn.addEventListener("click", () => {
+        const seed = (Math.random() * 1e9) | 0;
+        generateWorld(seed);
+        seedBadge.textContent = String(seed >>> 0);
+        renderOffscreenFull();
+        requestMapDraw();
+        requestMinimapDraw();
+        chunks.markAllDirty();
+        toast("Generated new world");
+      });
+
+      // -----------------------------
+      // Painting + interactions
+      // -----------------------------
+      let spaceDown = false;
+      window.addEventListener("keydown", (e) => {
+        if(e.code === "Space"){ spaceDown = true; }
+      }, { passive: true });
+      window.addEventListener("keyup", (e) => {
+        if(e.code === "Space"){ spaceDown = false; }
+      }, { passive: true });
+
+      function brushBBox(wx, wy, r){
+        const minX = Math.floor(wx - r - 1);
+        const minY = Math.floor(wy - r - 1);
+        const maxX = Math.ceil(wx + r + 1);
+        const maxY = Math.ceil(wy + r + 1);
+        return { minX, minY, maxX, maxY };
+      }
+
+      function applyBrush(wx, wy){
+        const r = mapState.brushRadius;
+        const s = WORLD.size;
+        const { minX, minY, maxX, maxY } = brushBBox(wx, wy, r);
+        const cx = wx;
+        const cy = wy;
+        const strength = 0.018;
+        const tool = mapState.tool;
+        const centerI = idxOf(Math.round(cx), Math.round(cy));
+        const centerH = WORLD.heightmap[centerI];
+
+        // For smooth, read a local copy to avoid feedback within the same pass.
+        let localHeights = null;
+        if(tool === "smooth"){
+          localHeights = new Float32Array((maxX-minX+1) * (maxY-minY+1));
+          let k = 0;
+          for(let y=minY;y<=maxY;y++){
+            for(let x=minX;x<=maxX;x++){
+              localHeights[k++] = WORLD.heightmap[idxOf(x,y)];
+            }
+          }
+        }
+
+        let dirty = mapState.dirtyBBox;
+        if(!dirty) dirty = { minX: 1e9, minY: 1e9, maxX: -1e9, maxY: -1e9 };
+        dirty.minX = Math.min(dirty.minX, minX);
+        dirty.minY = Math.min(dirty.minY, minY);
+        dirty.maxX = Math.max(dirty.maxX, maxX);
+        dirty.maxY = Math.max(dirty.maxY, maxY);
+        mapState.dirtyBBox = dirty;
+
+        let live = mapState.liveBBox;
+        if(!live) live = { minX: 1e9, minY: 1e9, maxX: -1e9, maxY: -1e9 };
+        live.minX = Math.min(live.minX, minX);
+        live.minY = Math.min(live.minY, minY);
+        live.maxX = Math.max(live.maxX, maxX);
+        live.maxY = Math.max(live.maxY, maxY);
+        mapState.liveBBox = live;
+
+        const rr = r * r;
+        for(let y=minY;y<=maxY;y++){
+          for(let x=minX;x<=maxX;x++){
+            const dx = (x + 0.5) - cx;
+            const dy = (y + 0.5) - cy;
+            const d2 = dx*dx + dy*dy;
+            if(d2 > rr) continue;
+            const t = 1 - Math.sqrt(d2) / r;
+            const falloff = t*t;
+            const i = idxOf(x,y);
+            if(tool === "raise"){
+              WORLD.heightmap[i] = clamp01(WORLD.heightmap[i] + strength * falloff);
+            }else if(tool === "lower"){
+              WORLD.heightmap[i] = clamp01(WORLD.heightmap[i] - strength * falloff);
+            }else if(tool === "flatten"){
+              WORLD.heightmap[i] = clamp01(WORLD.heightmap[i] + (centerH - WORLD.heightmap[i]) * (0.22 * falloff));
+            }else if(tool === "smooth"){
+              // 3x3 gaussian kernel
+              const kx = x - minX;
+              const ky = y - minY;
+              const w0 = 4, w1 = 2, w2 = 1;
+              const wSum = 16;
+              const getLocal = (xx, yy) => {
+                const lx = Math.max(0, Math.min(maxX-minX, xx - minX));
+                const ly = Math.max(0, Math.min(maxY-minY, yy - minY));
+                return localHeights[ly*(maxX-minX+1) + lx];
+              };
+              const sm =
+                (getLocal(x, y) * w0 +
+                 (getLocal(x-1, y) + getLocal(x+1, y) + getLocal(x, y-1) + getLocal(x, y+1)) * w1 +
+                 (getLocal(x-1, y-1) + getLocal(x+1, y-1) + getLocal(x-1, y+1) + getLocal(x+1, y+1)) * w2
+                ) / wSum;
+              WORLD.heightmap[i] = clamp01(WORLD.heightmap[i] + (sm - WORLD.heightmap[i]) * (0.55 * falloff));
+            }else if(tool === "paint"){
+              WORLD.override[i] = mapState.paintBiome;
+            }else if(tool === "erase"){
+              WORLD.override[i] = -1;
+            }
+          }
+        }
+
+        // Live preview: update biomes + pixels for the touched region on the next frame.
+        if(!mapState.liveScheduled){
+          mapState.liveScheduled = true;
+          requestAnimationFrame(() => {
+            mapState.liveScheduled = false;
+            if(!mapState.liveBBox) return;
+            const bb = mapState.liveBBox;
+            mapState.liveBBox = null;
+            const minX2 = Math.max(0, bb.minX|0);
+            const minY2 = Math.max(0, bb.minY|0);
+            const maxX2 = Math.min(s-1, bb.maxX|0);
+            const maxY2 = Math.min(s-1, bb.maxY|0);
+            const region = rederiveBiomesRegion(minX2, minY2, maxX2, maxY2);
+            renderOffscreenRegion(region.minX, region.minY, region.maxX, region.maxY);
+            requestMapDraw();
+          });
+        }
+      }
+
+      function endStroke(){
+        if(!mapState.dirtyBBox) return;
+        const s = WORLD.size;
+        const minX = Math.max(0, mapState.dirtyBBox.minX|0);
+        const minY = Math.max(0, mapState.dirtyBBox.minY|0);
+        const maxX = Math.min(s-1, mapState.dirtyBBox.maxX|0);
+        const maxY = Math.min(s-1, mapState.dirtyBBox.maxY|0);
+        mapState.dirtyBBox = null;
+        const region = rederiveBiomesRegion(minX, minY, maxX, maxY);
+        renderOffscreenRegion(region.minX, region.minY, region.maxX, region.maxY);
+        requestMapDraw();
+        requestMinimapDraw();
+        chunks.markDirtyRegion(region.minX, region.minY, region.maxX, region.maxY);
+      }
+
+      mapCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      mapCanvas.addEventListener("pointermove", (ev) => {
+        const p = cssPointFromEvent(ev);
+        const { wx, wy } = screenToWorld(p.x, p.y);
+        mapState.hovering = true;
+        mapState.hoverWorldX = wx;
+        mapState.hoverWorldY = wy;
+        const gx = Math.floor(wx);
+        const gy = Math.floor(wy);
+        coordsEl.textContent = `x: ${mod(gx, WORLD.size)} y: ${mod(gy, WORLD.size)}`;
+
+        if(mapState.isPanning && mapState.panStart){
+          const dx = p.x - mapState.panStart.x;
+          const dy = p.y - mapState.panStart.y;
+          cam.panX = mapState.panStart.basePanX + dx;
+          cam.panY = mapState.panStart.basePanY + dy;
+          requestMapDraw();
+          requestMinimapDraw();
+          return;
+        }
+
+        if(mapState.isPainting){
+          applyBrush(wx, wy);
+          requestMapDraw();
+          return;
+        }
+
+        if(mapState.pegDragging){
+          mapState.showPegGhost = true;
+          mapState.pegGhost.x = Math.floor(wx);
+          mapState.pegGhost.y = Math.floor(wy);
+          requestMapDraw();
+        }else if(mapState.showPegGhost){
+          mapState.showPegGhost = false;
+          requestMapDraw();
+        }else{
+          requestMapDraw();
+        }
+      });
+
+      mapCanvas.addEventListener("pointerleave", () => {
+        mapState.hovering = false;
+        requestMapDraw();
+      });
+
+      mapCanvas.addEventListener("pointerdown", (ev) => {
+        if(document.body.dataset.mode !== "map") return;
+        const p = cssPointFromEvent(ev);
+        const wantPan = (ev.button === 1) || (spaceDown && ev.button === 0);
+        if(wantPan){
+          mapState.isPanning = true;
+          mapState.panStart = { x: p.x, y: p.y, basePanX: cam.panX, basePanY: cam.panY };
+          mapCanvas.setPointerCapture(ev.pointerId);
+          return;
+        }
+
+        if(ev.button === 0 && !mapState.pegDragging){
+          mapState.isPainting = true;
+          const { wx, wy } = screenToWorld(p.x, p.y);
+          applyBrush(wx, wy);
+          requestMapDraw();
+          mapCanvas.setPointerCapture(ev.pointerId);
+        }
+      });
+
+      mapCanvas.addEventListener("pointerup", (ev) => {
+        if(mapState.isPanning){
+          mapState.isPanning = false;
+          mapState.panStart = null;
+          requestMinimapDraw();
+          return;
+        }
+        if(mapState.isPainting){
+          mapState.isPainting = false;
+          endStroke();
+          return;
+        }
+        if(mapState.pegDragging){
+          // Drop character peg
+          mapState.pegDragging = false;
+          mapState.showPegGhost = false;
+          requestMapDraw();
+          const p = cssPointFromEvent(ev);
+          const { wx, wy } = screenToWorld(p.x, p.y);
+          const gx = Math.floor(wx);
+          const gy = Math.floor(wy);
+          const biome = WORLD.biomemap[idxOf(gx, gy)];
+          if(biome === BIOME.OCEAN){
+            toast("Can't place in ocean");
+            return;
+          }
+          enterExplore(gx + 0.5, gy + 0.5);
+        }
+      });
+
+      mapCanvas.addEventListener("wheel", (ev) => {
+        if(document.body.dataset.mode !== "map") return;
+        ev.preventDefault();
+        const p = cssPointFromEvent(ev);
+        const before = screenToWorld(p.x, p.y);
+        const zoomMul = Math.pow(1.0015, -ev.deltaY);
+        const next = Math.max(0.5, Math.min(8.0, cam.zoom * zoomMul));
+        cam.zoom = next;
+        // Keep cursor-point stable
+        cam.panX = p.x - before.wx * cam.zoom;
+        cam.panY = p.y - before.wy * cam.zoom;
+        requestMapDraw();
+        requestMinimapDraw();
+      }, { passive: false });
+
+      miniCanvas.addEventListener("pointerdown", (ev) => {
+        if(document.body.dataset.mode !== "map") return;
+        const rect = miniCanvas.getBoundingClientRect();
+        const x = (ev.clientX - rect.left) / rect.width;
+        const y = (ev.clientY - rect.top) / rect.height;
+        const wx = x * WORLD.size;
+        const wy = y * WORLD.size;
+        // Center view on clicked world coordinate
+        cam.panX = window.innerWidth * 0.5 - wx * cam.zoom;
+        cam.panY = window.innerHeight * 0.5 - wy * cam.zoom;
+        requestMapDraw();
+        requestMinimapDraw();
+      });
+
+      pegEl.addEventListener("pointerdown", (ev) => {
+        if(document.body.dataset.mode !== "map") return;
+        mapState.pegDragging = true;
+        mapState.showPegGhost = true;
+        pegEl.setPointerCapture(ev.pointerId);
+        toast("Drop on the map to explore", 1200);
+      });
+
+      // -----------------------------
+      // Explore mode (Three.js)
+      // -----------------------------
+      const threeCanvas = document.getElementById("three-canvas");
+      const hud = document.getElementById("hud");
+      const backbtn = document.getElementById("backbtn");
+      const lockprompt = document.getElementById("lockprompt");
+      const hudBiomeEl = document.getElementById("hudBiome");
+      const hudCoordsEl = document.getElementById("hudCoords");
+
+      const player = {
+        pos: new THREE.Vector3(0, 10, 0),
+        velY: 0,
+        yaw: 0,
+        pitch: 0,
+        eyeHeight: 1.7,
+        lastKnown: null,
+        isLocked: false
+      };
+      const keys = new Set();
+      window.addEventListener("keydown", (e) => keys.add(e.code));
+      window.addEventListener("keyup", (e) => keys.delete(e.code));
+
+      const explore = {
+        renderer: null,
+        scene: null,
+        camera: null,
+        light: null,
+        clock: new THREE.Clock(),
+        running: false,
+        queuedChunks: [],
+        maxBuildPerFrame: 2
+      };
+
+      const chunks = {
+        size: 32,
+        viewRadius: 3, // 7x7
+        unloadDist: 10,
+        map: new Map(),
+        dirty: new Set(),
+        markDirtyRegion(minX, minY, maxX, maxY){
+          const cs = this.size;
+          const c0x = Math.floor(minX / cs);
+          const c0y = Math.floor(minY / cs);
+          const c1x = Math.floor(maxX / cs);
+          const c1y = Math.floor(maxY / cs);
+          for(let cy=c0y;cy<=c1y;cy++){
+            for(let cx=c0x;cx<=c1x;cx++){
+              this.dirty.add(`${cx},${cy}`);
+            }
+          }
+        },
+        markAllDirty(){
+          this.dirty.clear();
+          // force rebuild by clearing loaded chunks when in explore
+          if(this.map.size){
+            for(const key of this.map.keys()) this.dirty.add(key);
+          }
+        }
+      };
+
+      function sampleHeightWorld(wx, wy){
+        // bilinear height in world units (y)
+        const s = WORLD.size;
+        const x0 = Math.floor(wx);
+        const y0 = Math.floor(wy);
+        const x1 = x0 + 1;
+        const y1 = y0 + 1;
+        const tx = wx - x0;
+        const ty = wy - y0;
+        const h00 = WORLD.heightmap[idxOf(x0, y0)];
+        const h10 = WORLD.heightmap[idxOf(x1, y0)];
+        const h01 = WORLD.heightmap[idxOf(x0, y1)];
+        const h11 = WORLD.heightmap[idxOf(x1, y1)];
+        const h0 = h00*(1-tx) + h10*tx;
+        const h1 = h01*(1-tx) + h11*tx;
+        const h = (h0*(1-ty) + h1*ty);
+        // oceans are water plane at 0
+        const b = WORLD.biomemap[idxOf(Math.round(wx), Math.round(wy))];
+        const base = (b === BIOME.OCEAN) ? 0 : h;
+        return base * 40;
+      }
+
+      function biomeAt(wx, wy){
+        const x = Math.floor(wx);
+        const y = Math.floor(wy);
+        return WORLD.biomemap[idxOf(x, y)];
+      }
+
+      function makeSceneIfNeeded(){
+        if(explore.renderer) return;
+        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true });
+        renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+        renderer.setSize(window.innerWidth, window.innerHeight, false);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        explore.renderer = renderer;
+
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x88c7ff, 0.012);
+        explore.scene = scene;
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
+        explore.camera = camera;
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambient);
+
+        const sun = new THREE.DirectionalLight(0xffffff, 1.05);
+        sun.position.set(90, 140, 70);
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        sun.shadow.camera.near = 1;
+        sun.shadow.camera.far = 420;
+        sun.shadow.camera.left = -180;
+        sun.shadow.camera.right = 180;
+        sun.shadow.camera.top = 180;
+        sun.shadow.camera.bottom = -180;
+        scene.add(sun);
+        explore.light = sun;
+
+        // Sky sphere with a tiny gradient shader
+        const skyGeo = new THREE.SphereGeometry(900, 32, 16);
+        const skyMat = new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          uniforms: {
+            topColor: { value: new THREE.Color(0x9dd9ff) },
+            bottomColor: { value: new THREE.Color(0xdff4ff) }
+          },
+          vertexShader: `
+            varying float vY;
+            void main(){
+              vec4 w = modelMatrix * vec4(position, 1.0);
+              vY = clamp(w.y / 900.0, -1.0, 1.0);
+              gl_Position = projectionMatrix * viewMatrix * w;
+            }
+          `,
+          fragmentShader: `
+            varying float vY;
+            uniform vec3 topColor;
+            uniform vec3 bottomColor;
+            void main(){
+              float t = smoothstep(-0.3, 0.75, vY);
+              vec3 c = mix(bottomColor, topColor, t);
+              gl_FragColor = vec4(c, 1.0);
+            }
+          `
+        });
+        scene.add(new THREE.Mesh(skyGeo, skyMat));
+
+        window.addEventListener("resize", () => {
+          if(!explore.renderer) return;
+          explore.renderer.setSize(window.innerWidth, window.innerHeight, false);
+          explore.camera.aspect = window.innerWidth / window.innerHeight;
+          explore.camera.updateProjectionMatrix();
+        });
+
+        // pointer lock + look controls
+        threeCanvas.addEventListener("click", () => {
+          if(document.body.dataset.mode !== "explore") return;
+          if(!player.isLocked) threeCanvas.requestPointerLock();
+        });
+        document.addEventListener("pointerlockchange", () => {
+          player.isLocked = (document.pointerLockElement === threeCanvas);
+          lockprompt.style.display = player.isLocked ? "none" : "block";
+        });
+        document.addEventListener("mousemove", (e) => {
+          if(!player.isLocked) return;
+          player.yaw -= e.movementX * 0.0022;
+          player.pitch -= e.movementY * 0.0022;
+          const lim = Math.PI * 0.47;
+          player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+        });
+      }
+
+      function chunkKey(cx, cy){ return `${cx},${cy}`; }
+      function parseKey(key){
+        const [a,b] = key.split(",");
+        return { cx: Number(a), cy: Number(b) };
+      }
+
+      function seededChunkRand(cx, cy, salt){
+        // Deterministic per chunk, derived from world seed.
+        const s = (WORLD.seed ^ (cx*374761393) ^ (cy*668265263) ^ salt) >>> 0;
+        return mulberry32(s);
+      }
+
+      const shared = {
+        terrainMat: new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          roughness: 0.95,
+          metalness: 0.0
+        }),
+        waterMat: new THREE.MeshStandardMaterial({
+          color: 0x1a6b9e,
+          transparent: true,
+          opacity: 0.55,
+          roughness: 0.2,
+          metalness: 0.0
+        }),
+        trunkMat: new THREE.MeshStandardMaterial({ color: 0x5b4632, roughness: 1.0 }),
+        leafMat: new THREE.MeshStandardMaterial({ color: 0x2d7a3a, roughness: 1.0 }),
+        rockMat: new THREE.MeshStandardMaterial({ color: 0x8a7a6a, roughness: 1.0 })
+      };
+
+      const sharedGeo = {
+        trunk: new THREE.CylinderGeometry(0.12, 0.16, 1.2, 6, 1),
+        leaf: new THREE.ConeGeometry(0.55, 1.6, 8, 1),
+        rock: new THREE.DodecahedronGeometry(0.35, 0)
+      };
+
+      function buildChunk(cx, cy){
+        const cs = chunks.size;
+        const baseX = cx * cs;
+        const baseY = cy * cs;
+        const geo = new THREE.PlaneGeometry(cs, cs, cs, cs);
+        geo.rotateX(-Math.PI/2);
+        geo.userData._chunkOwned = true;
+
+        const pos = geo.attributes.position;
+        const colors = new Float32Array(pos.count * 3);
+        const tmp = new THREE.Color();
+        let hasOcean = false;
+
+        for(let iz=0;iz<=cs;iz++){
+          for(let ix=0;ix<=cs;ix++){
+            const v = iz*(cs+1) + ix;
+            const wx = baseX + ix;
+            const wy = baseY + iz;
+            const bi = biomeAt(wx, wy);
+            if(bi === BIOME.OCEAN) hasOcean = true;
+            const h = (bi === BIOME.OCEAN) ? 0 : (WORLD.heightmap[idxOf(wx, wy)] * 40);
+            pos.setY(v, h);
+            const c = BIOME_COLORS[bi] || [1,0,1];
+            tmp.setRGB(c[0], c[1], c[2]);
+            colors[v*3+0] = tmp.r;
+            colors[v*3+1] = tmp.g;
+            colors[v*3+2] = tmp.b;
+          }
+        }
+        geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        geo.computeVertexNormals();
+
+        const mesh = new THREE.Mesh(geo, shared.terrainMat);
+        mesh.receiveShadow = true;
+        mesh.castShadow = false;
+        mesh.position.set(baseX + cs/2, 0, baseY + cs/2);
+
+        // optional water plane
+        let water = null;
+        if(hasOcean){
+          const wgeo = new THREE.PlaneGeometry(cs, cs, 1, 1);
+          wgeo.rotateX(-Math.PI/2);
+          wgeo.userData._chunkOwned = true;
+          water = new THREE.Mesh(wgeo, shared.waterMat);
+          water.position.set(baseX + cs/2, 0.02, baseY + cs/2);
+          water.receiveShadow = true;
+        }
+
+        // scatter props
+        const randTree = seededChunkRand(cx, cy, 0xC0FFEE);
+        const randRock = seededChunkRand(cx, cy, 0xBADC0DE);
+
+        const trunk = new THREE.InstancedMesh(sharedGeo.trunk, shared.trunkMat, 512);
+        const leaf = new THREE.InstancedMesh(sharedGeo.leaf, shared.leafMat, 512);
+        const rock = new THREE.InstancedMesh(sharedGeo.rock, shared.rockMat, 512);
+        trunk.castShadow = true; trunk.receiveShadow = false;
+        leaf.castShadow = true; leaf.receiveShadow = false;
+        rock.castShadow = true; rock.receiveShadow = true;
+
+        const mat4 = new THREE.Matrix4();
+        const quat = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        const posV = new THREE.Vector3();
+        let tCount = 0, rCount = 0;
+
+        for(let y=0;y<cs;y++){
+          for(let x=0;x<cs;x++){
+            const wx = baseX + x + 0.5;
+            const wy = baseY + y + 0.5;
+            const b = biomeAt(wx, wy);
+            if(b === BIOME.FOREST){
+              if(randTree() < 0.08){
+                const hh = sampleHeightWorld(wx, wy);
+                const yaw = randTree() * Math.PI * 2;
+                quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+                posV.set(wx, hh, wy);
+                // trunk
+                scale.set(1, 0.9 + randTree()*0.5, 1);
+                mat4.compose(posV.clone().add(new THREE.Vector3(0, 0.6*scale.y, 0)), quat, new THREE.Vector3(1, scale.y, 1));
+                if(tCount < trunk.count){
+                  trunk.setMatrixAt(tCount, mat4);
+                }
+                // leaf
+                scale.set(1, 0.85 + randTree()*0.5, 1);
+                mat4.compose(posV.clone().add(new THREE.Vector3(0, 1.7*scale.y, 0)), quat, new THREE.Vector3(1, scale.y, 1));
+                if(tCount < leaf.count){
+                  leaf.setMatrixAt(tCount, mat4);
+                }
+                tCount++;
+              }
+            }else if(b === BIOME.DESERT){
+              if(randRock() < 0.05){
+                const hh = sampleHeightWorld(wx, wy);
+                const yaw = randRock() * Math.PI * 2;
+                quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
+                const s = 0.5 + randRock()*0.9;
+                posV.set(wx, hh + 0.15*s, wy);
+                mat4.compose(posV, quat, new THREE.Vector3(s, s, s));
+                if(rCount < rock.count) rock.setMatrixAt(rCount, mat4);
+                rCount++;
+              }
+            }
+          }
+        }
+
+        trunk.count = Math.min(tCount, 512);
+        leaf.count = Math.min(tCount, 512);
+        rock.count = Math.min(rCount, 512);
+        trunk.instanceMatrix.needsUpdate = true;
+        leaf.instanceMatrix.needsUpdate = true;
+        rock.instanceMatrix.needsUpdate = true;
+
+        const group = new THREE.Group();
+        group.add(mesh);
+        if(water) group.add(water);
+        if(trunk.count > 0) group.add(trunk);
+        if(leaf.count > 0) group.add(leaf);
+        if(rock.count > 0) group.add(rock);
+        group.userData = { cx, cy, mesh, water, trunk, leaf, rock };
+        return group;
+      }
+
+      function disposeChunkGroup(group){
+        group.traverse((o) => {
+          if(o.geometry && o.geometry.userData && o.geometry.userData._chunkOwned){
+            o.geometry.dispose();
+          }
+        });
+      }
+
+      function ensureChunksAroundPlayer(){
+        const cs = chunks.size;
+        const pcx = Math.floor(player.pos.x / cs);
+        const pcy = Math.floor(player.pos.z / cs);
+
+        const needed = new Set();
+        for(let dy=-chunks.viewRadius;dy<=chunks.viewRadius;dy++){
+          for(let dx=-chunks.viewRadius;dx<=chunks.viewRadius;dx++){
+            const cx = pcx + dx;
+            const cy = pcy + dy;
+            needed.add(chunkKey(cx, cy));
+          }
+        }
+
+        // unload far
+        for(const [key, group] of chunks.map){
+          const { cx, cy } = group.userData;
+          if(Math.abs(cx - pcx) > chunks.unloadDist || Math.abs(cy - pcy) > chunks.unloadDist){
+            explore.scene.remove(group);
+            disposeChunkGroup(group);
+            chunks.map.delete(key);
+            chunks.dirty.delete(key);
+          }
+        }
+
+        // rebuild dirty loaded chunks
+        for(const key of chunks.dirty){
+          if(!chunks.map.has(key)) continue;
+          const old = chunks.map.get(key);
+          explore.scene.remove(old);
+          disposeChunkGroup(old);
+          chunks.map.delete(key);
+          explore.queuedChunks.push(key);
+        }
+        chunks.dirty.clear();
+
+        // queue missing chunks
+        for(const key of needed){
+          if(chunks.map.has(key)) continue;
+          if(explore.queuedChunks.includes(key)) continue;
+          explore.queuedChunks.push(key);
+        }
+      }
+
+      function buildChunkQueueStep(){
+        let built = 0;
+        while(built < explore.maxBuildPerFrame && explore.queuedChunks.length){
+          const key = explore.queuedChunks.shift();
+          if(chunks.map.has(key)) continue;
+          const { cx, cy } = parseKey(key);
+          const group = buildChunk(cx, cy);
+          explore.scene.add(group);
+          chunks.map.set(key, group);
+          built++;
+        }
+      }
+
+      function updatePlayer(dt){
+        const speed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 16 : 8;
+        let moveX = 0, moveZ = 0;
+        if(keys.has("KeyW")) moveZ -= 1;
+        if(keys.has("KeyS")) moveZ += 1;
+        if(keys.has("KeyA")) moveX -= 1;
+        if(keys.has("KeyD")) moveX += 1;
+        const len = Math.hypot(moveX, moveZ) || 1;
+        moveX /= len; moveZ /= len;
+
+        const sin = Math.sin(player.yaw);
+        const cos = Math.cos(player.yaw);
+        const vx = (moveX * cos - moveZ * sin) * speed;
+        const vz = (moveX * sin + moveZ * cos) * speed;
+
+        player.pos.x += vx * dt;
+        player.pos.z += vz * dt;
+
+        // Gravity toward terrain
+        const groundY = sampleHeightWorld(player.pos.x, player.pos.z) + player.eyeHeight;
+        const g = 28;
+        player.velY -= g * dt;
+        player.pos.y += player.velY * dt;
+        if(player.pos.y < groundY){
+          player.pos.y = groundY;
+          player.velY = 0;
+        }
+
+        // Update camera from yaw/pitch
+        const cam = explore.camera;
+        cam.position.copy(player.pos);
+        cam.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+        player.lastKnown = { x: player.pos.x, z: player.pos.z };
+      }
+
+      function tickExplore(){
+        if(!explore.running) return;
+        const dt = Math.min(0.05, explore.clock.getDelta());
+
+        if(!player.isLocked){
+          lockprompt.style.display = "block";
+        }
+
+        updatePlayer(dt);
+        ensureChunksAroundPlayer();
+        buildChunkQueueStep();
+
+        const b = biomeAt(player.pos.x, player.pos.z);
+        hudBiomeEl.textContent = BIOME_NAMES[b] || "—";
+        hudCoordsEl.textContent = `x ${mod(Math.floor(player.pos.x), WORLD.size)} · y ${mod(Math.floor(player.pos.z), WORLD.size)}`;
+
+        // minimap dot
+        requestMinimapDraw();
+
+        explore.renderer.render(explore.scene, explore.camera);
+        requestAnimationFrame(tickExplore);
+      }
+
+      function enterExplore(wx, wy){
+        document.body.dataset.mode = "explore";
+        mapCanvas.style.display = "none";
+        threeCanvas.style.display = "block";
+        hud.style.display = "block";
+        makeSceneIfNeeded();
+
+        // Reset chunk queue on entry
+        explore.queuedChunks.length = 0;
+        for(const [key, group] of chunks.map){
+          explore.scene.remove(group);
+          disposeChunkGroup(group);
+        }
+        chunks.map.clear();
+        chunks.dirty.clear();
+
+        player.yaw = 0;
+        player.pitch = 0;
+        player.velY = 0;
+        player.pos.set(wx, sampleHeightWorld(wx, wy) + player.eyeHeight, wy);
+        player.lastKnown = { x: player.pos.x, z: player.pos.z };
+
+        lockprompt.style.display = "block";
+        explore.clock.stop();
+        explore.clock.start();
+        explore.running = true;
+        tickExplore();
+      }
+
+      function exitExplore(){
+        explore.running = false;
+        document.exitPointerLock?.();
+        document.body.dataset.mode = "map";
+        mapCanvas.style.display = "block";
+        threeCanvas.style.display = "none";
+        hud.style.display = "none";
+
+        // Center map on player position
+        if(player.lastKnown){
+          const cx = player.lastKnown.x;
+          const cy = player.lastKnown.z;
+          cam.panX = window.innerWidth * 0.5 - cx * cam.zoom;
+          cam.panY = window.innerHeight * 0.5 - cy * cam.zoom;
+        }
+        requestMapDraw();
+        requestMinimapDraw();
+      }
+
+      backbtn.addEventListener("click", exitExplore);
+
+      // -----------------------------
+      // Boot
+      // -----------------------------
+      (function boot(){
+        setBrushRadius(16);
+        setTool("raise");
+        const seed = (Math.random() * 1e9) | 0;
+        seedBadge.textContent = String(seed >>> 0);
+        generateWorld(seed);
+        renderOffscreenFull();
+        resizeCanvases();
+        requestMapDraw();
+        requestMinimapDraw();
+        toast("Tip: paint terrain, then drag the character to explore", 2400);
+      })();
+    </script>
+  </body>
+</html>
