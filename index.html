@@ -1455,7 +1455,8 @@
       function makeSceneIfNeeded(){
         if(explore.renderer) return;
         ensureSharedMaterials();
-        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, logarithmicDepthBuffer: true });
+        // Log depth can make large flat meshes disappear on some Windows GPUs/drivers.
+        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true });
         renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
         renderer.setSize(window.innerWidth, window.innerHeight, false);
         renderer.shadowMap.enabled = true;
@@ -1463,10 +1464,11 @@
         explore.renderer = renderer;
 
         const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x9dd9ff);
         scene.fog = new THREE.FogExp2(0x88c7ff, 0.0022);
         explore.scene = scene;
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1.0, 50000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 6000);
         explore.camera = camera;
 
         const ambient = new THREE.AmbientLight(0xffffff, 0.45);
@@ -1487,36 +1489,8 @@
         scene.add(sun);
         explore.light = sun;
 
-        // Sky sphere with a tiny gradient shader
-        const skyGeo = new THREE.SphereGeometry(8000, 32, 16);
-        const skyMat = new THREE.ShaderMaterial({
-          side: THREE.BackSide,
-          uniforms: {
-            topColor: { value: new THREE.Color(0x9dd9ff) },
-            bottomColor: { value: new THREE.Color(0xdff4ff) }
-          },
-          vertexShader: `
-            varying float vY;
-            void main(){
-              vec4 w = modelMatrix * vec4(position, 1.0);
-              vY = clamp(w.y / 900.0, -1.0, 1.0);
-              gl_Position = projectionMatrix * viewMatrix * w;
-            }
-          `,
-          fragmentShader: `
-            varying float vY;
-            uniform vec3 topColor;
-            uniform vec3 bottomColor;
-            void main(){
-              float t = smoothstep(-0.3, 0.75, vY);
-              vec3 c = mix(bottomColor, topColor, t);
-              gl_FragColor = vec4(c, 1.0);
-            }
-          `
-        });
-        const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-        scene.add(skyMesh);
-        explore.sky = skyMesh;
+        // Disable custom sky dome (can render as a black artifact on some GPUs).
+        explore.sky = null;
 
         window.addEventListener("resize", () => {
           if(!explore.renderer) return;
@@ -1643,10 +1617,11 @@
         if(!shared.terrainMat){
           shared.terrainMat = new THREE.MeshStandardMaterial({
             vertexColors: true,
+            color: 0xffffff,
             roughness: 0.96,
-            metalness: 0.0
+            metalness: 0.0,
+            side: THREE.DoubleSide
           });
-          patchTerrainMaterial(shared.terrainMat);
         }
         if(!shared.waterMat){
           shared.waterMat = new THREE.MeshPhysicalMaterial({
@@ -1911,7 +1886,10 @@
 
       const treeMats = {
         trunk: makeMat(0x5b4632, 1.0),
-        leaf: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0.0, vertexColors: true })
+        leaf: new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          side: THREE.DoubleSide
+        })
       };
 
       function setDecorUI(){
@@ -2065,6 +2043,7 @@
           treePlacements.push({
             cellX,
             cellY,
+            biome: b,
             ox: treeRand(),
             oy: treeRand(),
             yaw: treeRand() * Math.PI * 2,
@@ -2116,15 +2095,14 @@
         // Build trees as instanced meshes: one trunk + 3 canopy types
         const treeMeshes = [];
         if(treePlacements.length){
-          treeMats.leaf.vertexColors = true;
           const trunk = new THREE.InstancedMesh(treeGeo.trunk, treeMats.trunk, treePlacements.length);
           const canopyCone = new THREE.InstancedMesh(treeGeo.canopyCone, treeMats.leaf, treePlacements.length);
           const canopyIco = new THREE.InstancedMesh(treeGeo.canopyIco, treeMats.leaf, treePlacements.length);
           const canopySphere = new THREE.InstancedMesh(treeGeo.canopySphere, treeMats.leaf, treePlacements.length);
           trunk.castShadow = true; trunk.receiveShadow = false;
-          canopyCone.castShadow = true; canopyCone.receiveShadow = false;
-          canopyIco.castShadow = true; canopyIco.receiveShadow = false;
-          canopySphere.castShadow = true; canopySphere.receiveShadow = false;
+          canopyCone.castShadow = false; canopyCone.receiveShadow = false;
+          canopyIco.castShadow = false; canopyIco.receiveShadow = false;
+          canopySphere.castShadow = false; canopySphere.receiveShadow = false;
 
           const leafColor = new THREE.Color();
           let coneCount = 0, icoCount = 0, sphCount = 0;
@@ -2132,9 +2110,7 @@
             const p = treePlacements[i];
             const wx = cellToWorld(p.cellX + p.ox);
             const wz = cellToWorld(p.cellY + p.oy);
-            const h01 = WORLD.heightmap[idxOf(p.cellX, p.cellY)];
-            const b = WORLD.biomemap[idxOf(p.cellX, p.cellY)];
-            const ground = heightToElevationUnits(h01, b);
+            const ground = sampleElevationAtWorld(wx, wz) - 0.02;
 
             const preset = TREE_PRESETS[p.preset] || TREE_PRESETS[0];
             const base = TREE_WORLD_SCALE * p.s;
@@ -2156,9 +2132,13 @@
             mat4.compose(posV, quat, scaleV);
 
             // leaf color variation per tree
-            leafColor.setHex(preset.leaf);
-            const jitter = (treeRand() - 0.5) * 0.12;
-            leafColor.offsetHSL(jitter, 0, (treeRand() - 0.5) * 0.06);
+            const biomeLeafHex =
+              p.biome === BIOME.FOREST ? 0x6fcf63 :
+              p.biome === BIOME.PLAINS ? 0x8fdc6f :
+              p.biome === BIOME.TUNDRA ? 0x9ecf9f :
+              preset.leaf;
+            leafColor.setHex(biomeLeafHex);
+            leafColor.offsetHSL((treeRand() - 0.5) * 0.08, 0, (treeRand() - 0.5) * 0.05);
 
             if(canopyType === 0){
               canopyCone.setMatrixAt(coneCount, mat4);
