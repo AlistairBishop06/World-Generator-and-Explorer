@@ -196,6 +196,41 @@
         line-height: 1.4;
       }
 
+      .toggle{
+        display:flex;
+        align-items:center;
+        gap: 10px;
+      }
+      .switch{
+        width: 42px;
+        height: 24px;
+        border-radius: 999px;
+        border: 1px solid var(--stroke);
+        background: rgba(15,23,42,.7);
+        position: relative;
+        cursor: pointer;
+        flex: 0 0 auto;
+      }
+      .switch:before{
+        content:"";
+        position:absolute;
+        top: 3px;
+        left: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: rgba(230,237,247,.9);
+        transition: transform .14s ease, background .14s ease;
+      }
+      .switch[data-on="1"]{
+        border-color: rgba(94,234,212,.45);
+        background: rgba(94,234,212,.12);
+      }
+      .switch[data-on="1"]:before{
+        transform: translateX(18px);
+        background: rgba(94,234,212,.95);
+      }
+
       /* Minimap */
       #minimap-wrap{
         position: fixed;
@@ -458,6 +493,17 @@
         <h3>World</h3>
         <div class="row"><label>Size</label><span class="badge" id="sizeBadge">512×512</span></div>
         <div class="row"><label>Seed</label><span class="badge" id="seedBadge">—</span></div>
+        <div style="height:8px"></div>
+        <div class="row"><label for="treeDensity">Tree density</label><span class="badge" id="treeBadge">1.00×</span></div>
+        <input id="treeDensity" type="range" min="0" max="2" step="0.05" value="1" />
+        <div class="row" style="margin-top:10px"><label for="clutterDensity">Clutter density</label><span class="badge" id="clutterBadge">1.00×</span></div>
+        <input id="clutterDensity" type="range" min="0" max="2" step="0.05" value="1" />
+        <div class="row" style="margin-top:10px">
+          <label>Collisions</label>
+          <div class="toggle">
+            <div class="switch" id="collisionToggle" data-on="1" role="switch" aria-checked="true" tabindex="0"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -713,6 +759,11 @@
       const seedBadge = document.getElementById("seedBadge");
       const sizeBadge = document.getElementById("sizeBadge");
       sizeBadge.textContent = `${WORLD.size}×${WORLD.size}`;
+      const treeDensityEl = document.getElementById("treeDensity");
+      const clutterDensityEl = document.getElementById("clutterDensity");
+      const treeBadgeEl = document.getElementById("treeBadge");
+      const clutterBadgeEl = document.getElementById("clutterBadge");
+      const collisionToggleEl = document.getElementById("collisionToggle");
 
       const off = document.createElement("canvas");
       off.width = WORLD.size;
@@ -1311,6 +1362,12 @@
         maxBuildPerFrame: 2
       };
 
+      const DECOR = {
+        treeDensity: 1.0,
+        clutterDensity: 1.0,
+        collisions: true
+      };
+
       // Explore scale tuning:
       // - Each map cell corresponds to this many world units in X/Z.
       // - Elevation is derived from height above BEACH level, so coasts are flush with water.
@@ -1384,6 +1441,7 @@
 
       function makeSceneIfNeeded(){
         if(explore.renderer) return;
+        ensureSharedMaterials();
         const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true });
         renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
         renderer.setSize(window.innerWidth, window.innerHeight, false);
@@ -1483,25 +1541,114 @@
       }
 
       const shared = {
-        terrainMat: new THREE.MeshStandardMaterial({
-          vertexColors: true,
-          roughness: 0.95,
-          metalness: 0.0
-        }),
-        waterMat: new THREE.MeshStandardMaterial({
-          color: 0x1a6b9e,
-          transparent: true,
-          opacity: 0.55,
-          roughness: 0.2,
-          metalness: 0.0,
-          polygonOffset: true,
-          polygonOffsetFactor: -1,
-          polygonOffsetUnits: -1
-        }),
+        terrainMat: null,
+        waterMat: null,
         trunkMat: new THREE.MeshStandardMaterial({ color: 0x5b4632, roughness: 1.0 }),
         leafMat: new THREE.MeshStandardMaterial({ color: 0x2d7a3a, roughness: 1.0 }),
         rockMat: new THREE.MeshStandardMaterial({ color: 0x8a7a6a, roughness: 1.0 })
       };
+
+      const shaderTime = { value: 0 };
+
+      function patchTerrainMaterial(mat){
+        mat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTime = shaderTime;
+          shader.vertexShader =
+            "varying vec3 vWorldPos;\n" +
+            "varying float vElev;\n" +
+            shader.vertexShader;
+          shader.vertexShader = shader.vertexShader.replace(
+            "vec4 worldPosition = modelMatrix * vec4( transformed, 1.0 );",
+            "vec4 worldPosition = modelMatrix * vec4( transformed, 1.0 );\n vWorldPos = worldPosition.xyz;\n vElev = worldPosition.y;"
+          );
+          shader.fragmentShader =
+            "uniform float uTime;\n" +
+            "varying vec3 vWorldPos;\n" +
+            "varying float vElev;\n" +
+            shader.fragmentShader;
+          shader.fragmentShader = shader.fragmentShader.replace(
+            "vec4 diffuseColor = vec4( diffuse, opacity );",
+            `vec4 diffuseColor = vec4( diffuse, opacity );
+            // procedural albedo detail (no texture fetches)
+            float h1 = fract(sin(dot(vWorldPos.xz * 0.045, vec2(12.9898,78.233))) * 43758.5453);
+            float h2 = fract(sin(dot(vWorldPos.xz * 0.11 + uTime*0.002, vec2(93.9898,67.345))) * 24634.6345);
+            float n = mix(h1, h2, 0.45);
+            float slope = clamp(1.0 - normalize(vNormal).y, 0.0, 1.0);
+            float rockiness = smoothstep(0.25, 0.75, slope);
+            float shoreWet = 1.0 - smoothstep(0.0, 2.0, vElev);
+            float detail = mix(0.88, 1.12, n);
+            diffuseColor.rgb *= detail;
+            // add rocky variation on steep slopes
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.78, rockiness * 0.55);
+            // darken slightly near waterline (wet sand / soil)
+            diffuseColor.rgb = mix(diffuseColor.rgb * 0.72, diffuseColor.rgb, 1.0 - shoreWet * 0.55);
+            `
+          );
+          mat.userData._shader = shader;
+        };
+        mat.needsUpdate = true;
+      }
+
+      function patchWaterMaterial(mat){
+        mat.onBeforeCompile = (shader) => {
+          shader.uniforms.uTime = shaderTime;
+          shader.vertexShader =
+            "uniform float uTime;\n" +
+            shader.vertexShader;
+          shader.vertexShader = shader.vertexShader.replace(
+            "#include <begin_vertex>",
+            `#include <begin_vertex>
+             transformed.y += (sin((position.x*0.055) + uTime*1.2) + sin((position.z*0.048) + uTime*1.05)) * 0.22;
+             transformed.y += sin((position.x+position.z)*0.022 + uTime*0.8) * 0.08;`
+          );
+
+          shader.fragmentShader =
+            "uniform float uTime;\n" +
+            shader.fragmentShader;
+          shader.fragmentShader = shader.fragmentShader.replace(
+            "vec4 diffuseColor = vec4( diffuse, opacity );",
+            `vec4 diffuseColor = vec4( diffuse, opacity );
+             // fresnel + subtle procedural color variation
+             vec3 V = normalize(vViewPosition);
+             float fres = pow(1.0 - clamp(dot(normalize(vNormal), -V), 0.0, 1.0), 3.0);
+             float w = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233))) * 43758.5453);
+             vec3 deep = vec3(0.06, 0.32, 0.52);
+             vec3 shallow = vec3(0.10, 0.48, 0.64);
+             vec3 c = mix(deep, shallow, 0.35 + 0.2*w);
+             diffuseColor.rgb = mix(c, vec3(0.65,0.9,1.0), fres * 0.7);
+             diffuseColor.a = diffuseColor.a * (0.92 + fres * 0.08);
+            `
+          );
+          mat.userData._shader = shader;
+        };
+        mat.needsUpdate = true;
+      }
+
+      function ensureSharedMaterials(){
+        if(!shared.terrainMat){
+          shared.terrainMat = new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.96,
+            metalness: 0.0
+          });
+          patchTerrainMaterial(shared.terrainMat);
+        }
+        if(!shared.waterMat){
+          shared.waterMat = new THREE.MeshPhysicalMaterial({
+            color: 0x1a6b9e,
+            transparent: true,
+            opacity: 0.55,
+            roughness: 0.15,
+            metalness: 0.0,
+            clearcoat: 0.6,
+            clearcoatRoughness: 0.12,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1
+          });
+          patchWaterMaterial(shared.waterMat);
+        }
+      }
 
       const sharedGeo = {
         trunk: new THREE.CylinderGeometry(0.12, 0.16, 1.2, 6, 1),
@@ -1509,7 +1656,277 @@
         rock: new THREE.DodecahedronGeometry(0.35, 0)
       };
 
+      function makeMat(color, rough=1.0){
+        return new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0.0 });
+      }
+
+      const DECOR_DEFS = (() => {
+        // Low-poly single-geometry "models" (fast to instance).
+        // Provide ~10-15 per biome; some are shared across biomes with different materials.
+        const defs = {};
+        const g = {
+          pebble: new THREE.IcosahedronGeometry(0.22, 0),
+          rock: new THREE.DodecahedronGeometry(0.42, 0),
+          boulder: new THREE.DodecahedronGeometry(0.78, 0),
+          spire: new THREE.ConeGeometry(0.35, 1.3, 6, 1),
+          shrub: new THREE.IcosahedronGeometry(0.55, 0),
+          bush: new THREE.IcosahedronGeometry(0.85, 0),
+          flower: new THREE.ConeGeometry(0.18, 0.5, 6, 1),
+          grass: new THREE.ConeGeometry(0.12, 0.35, 5, 1),
+          mushroom: new THREE.ConeGeometry(0.22, 0.42, 8, 1),
+          stump: new THREE.CylinderGeometry(0.28, 0.33, 0.55, 7, 1),
+          log: new THREE.CylinderGeometry(0.18, 0.18, 1.25, 7, 1),
+          shell: new THREE.TorusGeometry(0.18, 0.06, 6, 10),
+          drift: new THREE.BoxGeometry(1.2, 0.18, 0.22),
+          cactus: new THREE.CylinderGeometry(0.18, 0.22, 1.4, 7, 1),
+          iceSpike: new THREE.ConeGeometry(0.32, 1.6, 6, 1),
+          crystal: new THREE.OctahedronGeometry(0.5, 0),
+          snowRock: new THREE.IcosahedronGeometry(0.55, 0),
+          bone: new THREE.TorusGeometry(0.22, 0.07, 6, 10)
+        };
+        for(const gg of Object.values(g)) gg.computeVertexNormals();
+
+        const mats = {
+          sand: makeMat(0xe8d5a3, 1.0),
+          grass: makeMat(0x5ea84d, 1.0),
+          grass2: makeMat(0x7ec850, 1.0),
+          forest: makeMat(0x2d7a3a, 1.0),
+          leaf: makeMat(0x2d7a3a, 1.0),
+          flower: makeMat(0xff7aa8, 1.0),
+          flower2: makeMat(0xffd166, 1.0),
+          wood: makeMat(0x6b4f36, 1.0),
+          wood2: makeMat(0x4e3a2a, 1.0),
+          rock: makeMat(0x8a7a6a, 1.0),
+          rock2: makeMat(0x6f6a63, 1.0),
+          desert: makeMat(0xe8c87a, 1.0),
+          cactus: makeMat(0x4f9d5a, 1.0),
+          tundra: makeMat(0xa8c8b8, 1.0),
+          snow: makeMat(0xffffff, 0.9),
+          ice: makeMat(0xcdf3ff, 0.35),
+          bone: makeMat(0xf2e9d8, 1.0)
+        };
+
+        function def(id, geom, mat, opt){
+          defs[id] = {
+            id,
+            geom,
+            mat,
+            baseScale: opt.baseScale ?? 1,
+            scaleJitter: opt.scaleJitter ?? 0.35,
+            yOffset: opt.yOffset ?? 0,
+            castShadow: opt.castShadow ?? true,
+            receiveShadow: opt.receiveShadow ?? false,
+            collider: opt.collider ?? 0
+          };
+        }
+
+        // BEACH (12)
+        def("beach_shell", g.shell, mats.sand, { baseScale: 0.8, scaleJitter: 0.5, castShadow:false, collider: 0 });
+        def("beach_pebble", g.pebble, mats.rock2, { baseScale: 0.85, scaleJitter: 0.8, castShadow:false, collider: 0 });
+        def("beach_rock", g.rock, mats.rock, { baseScale: 0.9, scaleJitter: 0.55, collider: 0.45 });
+        def("beach_driftwood", g.drift, mats.wood, { baseScale: 0.75, scaleJitter: 0.55, collider: 0.65 });
+        def("beach_grass", g.grass, mats.grass2, { baseScale: 0.9, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("beach_log", g.log, mats.wood2, { baseScale: 0.7, scaleJitter: 0.4, collider: 0.6 });
+        def("beach_stump", g.stump, mats.wood, { baseScale: 0.8, scaleJitter: 0.35, collider: 0.55 });
+        def("beach_boulder", g.boulder, mats.rock, { baseScale: 0.55, scaleJitter: 0.3, collider: 0.85 });
+        def("beach_flower", g.flower, mats.flower2, { baseScale: 0.85, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("beach_shrub", g.shrub, mats.grass, { baseScale: 0.65, scaleJitter: 0.55, castShadow:false, collider: 0.35 });
+        def("beach_spire", g.spire, mats.rock2, { baseScale: 0.55, scaleJitter: 0.3, collider: 0.45 });
+        def("beach_bone", g.bone, mats.bone, { baseScale: 0.7, scaleJitter: 0.5, castShadow:false, collider: 0.25 });
+
+        // PLAINS (12)
+        def("plains_grass", g.grass, mats.grass2, { baseScale: 1.0, scaleJitter: 0.75, castShadow:false, collider: 0 });
+        def("plains_grass2", g.grass, mats.grass, { baseScale: 1.0, scaleJitter: 0.75, castShadow:false, collider: 0 });
+        def("plains_flower", g.flower, mats.flower, { baseScale: 1.0, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("plains_flower2", g.flower, mats.flower2, { baseScale: 1.0, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("plains_shrub", g.shrub, mats.grass, { baseScale: 0.85, scaleJitter: 0.6, collider: 0.35 });
+        def("plains_bush", g.bush, mats.grass2, { baseScale: 0.7, scaleJitter: 0.5, collider: 0.5 });
+        def("plains_rock", g.rock, mats.rock2, { baseScale: 0.7, scaleJitter: 0.5, collider: 0.45 });
+        def("plains_pebble", g.pebble, mats.rock2, { baseScale: 0.9, scaleJitter: 0.8, castShadow:false, collider: 0 });
+        def("plains_log", g.log, mats.wood, { baseScale: 0.65, scaleJitter: 0.45, collider: 0.55 });
+        def("plains_stump", g.stump, mats.wood2, { baseScale: 0.7, scaleJitter: 0.4, collider: 0.5 });
+        def("plains_spire", g.spire, mats.rock2, { baseScale: 0.45, scaleJitter: 0.35, collider: 0.35 });
+        def("plains_mushroom", g.mushroom, mats.bone, { baseScale: 0.85, scaleJitter: 0.5, castShadow:false, collider: 0 });
+
+        // FOREST (12)
+        def("forest_mushroom", g.mushroom, mats.flower2, { baseScale: 0.9, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("forest_mushroom2", g.mushroom, mats.flower, { baseScale: 0.9, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("forest_stump", g.stump, mats.wood, { baseScale: 0.9, scaleJitter: 0.5, collider: 0.55 });
+        def("forest_log", g.log, mats.wood2, { baseScale: 0.75, scaleJitter: 0.45, collider: 0.6 });
+        def("forest_rock", g.rock, mats.rock, { baseScale: 0.8, scaleJitter: 0.55, collider: 0.5 });
+        def("forest_pebble", g.pebble, mats.rock2, { baseScale: 0.95, scaleJitter: 0.85, castShadow:false, collider: 0 });
+        def("forest_shrub", g.shrub, mats.forest, { baseScale: 0.8, scaleJitter: 0.55, collider: 0.4 });
+        def("forest_bush", g.bush, mats.leaf, { baseScale: 0.7, scaleJitter: 0.5, collider: 0.55 });
+        def("forest_grass", g.grass, mats.forest, { baseScale: 0.9, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("forest_flower", g.flower, mats.flower, { baseScale: 0.95, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("forest_flower2", g.flower, mats.flower2, { baseScale: 0.95, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("forest_spire", g.spire, mats.rock2, { baseScale: 0.55, scaleJitter: 0.4, collider: 0.45 });
+
+        // DESERT (12)
+        def("desert_cactus", g.cactus, mats.cactus, { baseScale: 0.9, scaleJitter: 0.55, collider: 0.55 });
+        def("desert_rock", g.rock, mats.rock, { baseScale: 0.85, scaleJitter: 0.55, collider: 0.5 });
+        def("desert_pebble", g.pebble, mats.rock2, { baseScale: 0.95, scaleJitter: 0.9, castShadow:false, collider: 0 });
+        def("desert_spire", g.spire, mats.rock2, { baseScale: 0.75, scaleJitter: 0.55, collider: 0.55 });
+        def("desert_boulder", g.boulder, mats.rock, { baseScale: 0.65, scaleJitter: 0.35, collider: 0.9 });
+        def("desert_shrub", g.shrub, mats.desert, { baseScale: 0.75, scaleJitter: 0.55, castShadow:false, collider: 0.35 });
+        def("desert_bush", g.bush, mats.desert, { baseScale: 0.6, scaleJitter: 0.45, castShadow:false, collider: 0.5 });
+        def("desert_log", g.log, mats.wood, { baseScale: 0.6, scaleJitter: 0.4, collider: 0.55 });
+        def("desert_stump", g.stump, mats.wood2, { baseScale: 0.6, scaleJitter: 0.35, collider: 0.5 });
+        def("desert_bone", g.bone, mats.bone, { baseScale: 0.85, scaleJitter: 0.6, castShadow:false, collider: 0.25 });
+        def("desert_crystal", g.crystal, mats.rock2, { baseScale: 0.55, scaleJitter: 0.35, collider: 0.35 });
+        def("desert_shell", g.shell, mats.sand, { baseScale: 0.75, scaleJitter: 0.5, castShadow:false, collider: 0 });
+
+        // TUNDRA (12)
+        def("tundra_shrub", g.shrub, mats.tundra, { baseScale: 0.8, scaleJitter: 0.6, castShadow:false, collider: 0.35 });
+        def("tundra_bush", g.bush, mats.tundra, { baseScale: 0.7, scaleJitter: 0.55, castShadow:false, collider: 0.5 });
+        def("tundra_rock", g.rock, mats.rock2, { baseScale: 0.85, scaleJitter: 0.55, collider: 0.5 });
+        def("tundra_pebble", g.pebble, mats.rock2, { baseScale: 1.0, scaleJitter: 0.9, castShadow:false, collider: 0 });
+        def("tundra_ice", g.crystal, mats.ice, { baseScale: 0.6, scaleJitter: 0.45, collider: 0.35 });
+        def("tundra_ice2", g.iceSpike, mats.ice, { baseScale: 0.5, scaleJitter: 0.45, collider: 0.35 });
+        def("tundra_grass", g.grass, mats.tundra, { baseScale: 0.9, scaleJitter: 0.7, castShadow:false, collider: 0 });
+        def("tundra_stump", g.stump, mats.wood2, { baseScale: 0.65, scaleJitter: 0.4, collider: 0.5 });
+        def("tundra_log", g.log, mats.wood, { baseScale: 0.6, scaleJitter: 0.45, collider: 0.55 });
+        def("tundra_spire", g.spire, mats.rock2, { baseScale: 0.6, scaleJitter: 0.45, collider: 0.45 });
+        def("tundra_boulder", g.boulder, mats.rock, { baseScale: 0.55, scaleJitter: 0.35, collider: 0.9 });
+        def("tundra_bone", g.bone, mats.bone, { baseScale: 0.75, scaleJitter: 0.55, castShadow:false, collider: 0.25 });
+
+        // MOUNTAIN (12)
+        def("mount_rock", g.rock, mats.rock, { baseScale: 0.95, scaleJitter: 0.65, collider: 0.55 });
+        def("mount_boulder", g.boulder, mats.rock2, { baseScale: 0.85, scaleJitter: 0.45, collider: 1.0 });
+        def("mount_pebble", g.pebble, mats.rock2, { baseScale: 1.0, scaleJitter: 0.95, castShadow:false, collider: 0 });
+        def("mount_spire", g.spire, mats.rock2, { baseScale: 1.0, scaleJitter: 0.55, collider: 0.7 });
+        def("mount_spire2", g.spire, mats.rock, { baseScale: 0.85, scaleJitter: 0.5, collider: 0.65 });
+        def("mount_crystal", g.crystal, mats.rock2, { baseScale: 0.7, scaleJitter: 0.45, collider: 0.45 });
+        def("mount_stump", g.stump, mats.wood2, { baseScale: 0.6, scaleJitter: 0.4, collider: 0.5 });
+        def("mount_log", g.log, mats.wood, { baseScale: 0.55, scaleJitter: 0.35, collider: 0.55 });
+        def("mount_shrub", g.shrub, mats.grass, { baseScale: 0.6, scaleJitter: 0.5, castShadow:false, collider: 0.35 });
+        def("mount_grass", g.grass, mats.grass, { baseScale: 0.7, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("mount_bone", g.bone, mats.bone, { baseScale: 0.65, scaleJitter: 0.45, castShadow:false, collider: 0.25 });
+        def("mount_ice", g.crystal, mats.ice, { baseScale: 0.55, scaleJitter: 0.4, collider: 0.35 });
+
+        // SNOW_CAP (12)
+        def("snow_spike", g.iceSpike, mats.ice, { baseScale: 0.85, scaleJitter: 0.6, collider: 0.45 });
+        def("snow_crystal", g.crystal, mats.ice, { baseScale: 0.8, scaleJitter: 0.55, collider: 0.45 });
+        def("snow_rock", g.rock, mats.snow, { baseScale: 0.85, scaleJitter: 0.55, collider: 0.5 });
+        def("snow_snowrock", g.snowRock, mats.snow, { baseScale: 0.95, scaleJitter: 0.75, collider: 0.45 });
+        def("snow_pebble", g.pebble, mats.snow, { baseScale: 1.0, scaleJitter: 0.95, castShadow:false, collider: 0 });
+        def("snow_boulder", g.boulder, mats.snow, { baseScale: 0.8, scaleJitter: 0.5, collider: 1.0 });
+        def("snow_spire", g.spire, mats.ice, { baseScale: 0.85, scaleJitter: 0.55, collider: 0.65 });
+        def("snow_spire2", g.spire, mats.snow, { baseScale: 0.75, scaleJitter: 0.5, collider: 0.65 });
+        def("snow_shrub", g.shrub, mats.snow, { baseScale: 0.6, scaleJitter: 0.55, castShadow:false, collider: 0.35 });
+        def("snow_grass", g.grass, mats.snow, { baseScale: 0.7, scaleJitter: 0.6, castShadow:false, collider: 0 });
+        def("snow_bone", g.bone, mats.bone, { baseScale: 0.6, scaleJitter: 0.4, castShadow:false, collider: 0.25 });
+        def("snow_ice", g.crystal, mats.ice, { baseScale: 0.75, scaleJitter: 0.55, collider: 0.45 });
+
+        return defs;
+      })();
+
+      const BIOME_DECOR = {
+        [BIOME.BEACH]: [
+          ["beach_shell", 0.9], ["beach_pebble", 0.9], ["beach_rock", 0.45], ["beach_driftwood", 0.25],
+          ["beach_grass", 0.25], ["beach_log", 0.12], ["beach_stump", 0.12], ["beach_boulder", 0.08],
+          ["beach_flower", 0.08], ["beach_shrub", 0.12], ["beach_spire", 0.10], ["beach_bone", 0.06]
+        ],
+        [BIOME.PLAINS]: [
+          ["plains_grass", 1.0], ["plains_grass2", 1.0], ["plains_flower", 0.35], ["plains_flower2", 0.35],
+          ["plains_shrub", 0.22], ["plains_bush", 0.12], ["plains_rock", 0.18], ["plains_pebble", 0.55],
+          ["plains_log", 0.07], ["plains_stump", 0.07], ["plains_spire", 0.08], ["plains_mushroom", 0.05]
+        ],
+        [BIOME.FOREST]: [
+          ["forest_mushroom", 0.25], ["forest_mushroom2", 0.25], ["forest_stump", 0.14], ["forest_log", 0.14],
+          ["forest_rock", 0.22], ["forest_pebble", 0.55], ["forest_shrub", 0.26], ["forest_bush", 0.16],
+          ["forest_grass", 0.45], ["forest_flower", 0.12], ["forest_flower2", 0.12], ["forest_spire", 0.08]
+        ],
+        [BIOME.DESERT]: [
+          ["desert_cactus", 0.30], ["desert_rock", 0.25], ["desert_pebble", 0.60], ["desert_spire", 0.18],
+          ["desert_boulder", 0.10], ["desert_shrub", 0.22], ["desert_bush", 0.14], ["desert_log", 0.05],
+          ["desert_stump", 0.05], ["desert_bone", 0.10], ["desert_crystal", 0.06], ["desert_shell", 0.04]
+        ],
+        [BIOME.TUNDRA]: [
+          ["tundra_shrub", 0.32], ["tundra_bush", 0.18], ["tundra_rock", 0.25], ["tundra_pebble", 0.60],
+          ["tundra_ice", 0.16], ["tundra_ice2", 0.12], ["tundra_grass", 0.24], ["tundra_stump", 0.06],
+          ["tundra_log", 0.06], ["tundra_spire", 0.10], ["tundra_boulder", 0.10], ["tundra_bone", 0.05]
+        ],
+        [BIOME.MOUNTAIN]: [
+          ["mount_rock", 0.40], ["mount_boulder", 0.18], ["mount_pebble", 0.75], ["mount_spire", 0.22],
+          ["mount_spire2", 0.18], ["mount_crystal", 0.10], ["mount_stump", 0.03], ["mount_log", 0.03],
+          ["mount_shrub", 0.08], ["mount_grass", 0.08], ["mount_bone", 0.04], ["mount_ice", 0.08]
+        ],
+        [BIOME.SNOW_CAP]: [
+          ["snow_spike", 0.26], ["snow_crystal", 0.18], ["snow_rock", 0.22], ["snow_snowrock", 0.35],
+          ["snow_pebble", 0.65], ["snow_boulder", 0.12], ["snow_spire", 0.14], ["snow_spire2", 0.14],
+          ["snow_shrub", 0.06], ["snow_grass", 0.06], ["snow_bone", 0.04], ["snow_ice", 0.12]
+        ]
+      };
+
+      function pickWeighted(list, r01){
+        let sum = 0;
+        for(const [,w] of list) sum += w;
+        let t = r01 * sum;
+        for(const [id,w] of list){
+          t -= w;
+          if(t <= 0) return id;
+        }
+        return list[list.length - 1][0];
+      }
+
+      const TREE_PRESETS = [
+        { canopy: 0, trunkY: 1.15, canopyY: 2.15, trunkW: 0.95, canopyW: 0.95, canopyH: 1.4, leaf: 0x2d7a3a }, // classic pine
+        { canopy: 0, trunkY: 1.35, canopyY: 2.35, trunkW: 0.9, canopyW: 0.8, canopyH: 1.8, leaf: 0x2f8f46 }, // tall pine
+        { canopy: 1, trunkY: 1.05, canopyY: 1.95, trunkW: 1.0, canopyW: 1.25, canopyH: 1.0, leaf: 0x2d7a3a }, // round oak-ish
+        { canopy: 1, trunkY: 0.95, canopyY: 1.75, trunkW: 1.15, canopyW: 1.35, canopyH: 1.1, leaf: 0x2a6f34 }, // stocky
+        { canopy: 2, trunkY: 1.0, canopyY: 1.85, trunkW: 1.0, canopyW: 1.1, canopyH: 1.05, leaf: 0x3a8a4a }, // sphere canopy
+        { canopy: 2, trunkY: 1.2, canopyY: 2.05, trunkW: 0.9, canopyW: 0.95, canopyH: 0.95, leaf: 0x2d7a3a }, // compact
+        { canopy: 0, trunkY: 1.05, canopyY: 2.0, trunkW: 1.0, canopyW: 1.05, canopyH: 1.25, leaf: 0x1f6a2f }, // dark
+        { canopy: 1, trunkY: 1.15, canopyY: 2.1, trunkW: 0.95, canopyW: 1.15, canopyH: 0.95, leaf: 0x2c7a3a }, // wide
+        { canopy: 0, trunkY: 1.4, canopyY: 2.6, trunkW: 0.85, canopyW: 0.7, canopyH: 2.0, leaf: 0x3a9152 }, // spruce
+        { canopy: 2, trunkY: 0.9, canopyY: 1.65, trunkW: 1.2, canopyW: 1.25, canopyH: 1.0, leaf: 0x2d7a3a } // small
+      ];
+
+      const treeGeo = {
+        trunk: new THREE.CylinderGeometry(0.14, 0.18, 1.6, 7, 1),
+        canopyCone: new THREE.ConeGeometry(0.85, 2.2, 8, 1),
+        canopyIco: new THREE.IcosahedronGeometry(0.95, 0),
+        canopySphere: new THREE.SphereGeometry(0.85, 8, 6)
+      };
+      treeGeo.trunk.computeVertexNormals();
+      treeGeo.canopyCone.computeVertexNormals();
+      treeGeo.canopyIco.computeVertexNormals();
+      treeGeo.canopySphere.computeVertexNormals();
+
+      const treeMats = {
+        trunk: makeMat(0x5b4632, 1.0),
+        leaf: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0.0, vertexColors: true })
+      };
+
+      function setDecorUI(){
+        treeBadgeEl.textContent = `${DECOR.treeDensity.toFixed(2)}×`;
+        clutterBadgeEl.textContent = `${DECOR.clutterDensity.toFixed(2)}×`;
+        collisionToggleEl.dataset.on = DECOR.collisions ? "1" : "0";
+        collisionToggleEl.setAttribute("aria-checked", DECOR.collisions ? "true" : "false");
+      }
+
+      function setDecor(treeD, clutterD, collisions){
+        DECOR.treeDensity = Math.max(0, Math.min(2, treeD));
+        DECOR.clutterDensity = Math.max(0, Math.min(2, clutterD));
+        DECOR.collisions = !!collisions;
+        setDecorUI();
+        chunks.markAllDirty();
+        if(explore.running) toast("Regenerating explore decoration…", 900);
+      }
+
+      treeDensityEl.addEventListener("input", () => setDecor(Number(treeDensityEl.value), DECOR.clutterDensity, DECOR.collisions));
+      clutterDensityEl.addEventListener("input", () => setDecor(DECOR.treeDensity, Number(clutterDensityEl.value), DECOR.collisions));
+      collisionToggleEl.addEventListener("click", () => setDecor(DECOR.treeDensity, DECOR.clutterDensity, !DECOR.collisions));
+      collisionToggleEl.addEventListener("keydown", (e) => {
+        if(e.code === "Enter" || e.code === "Space"){
+          e.preventDefault();
+          setDecor(DECOR.treeDensity, DECOR.clutterDensity, !DECOR.collisions);
+        }
+      });
+
       function buildChunk(cx, cy){
+        ensureSharedMaterials();
         const cs = chunks.size; // cells
         const chunkWorld = cs * CELL_SCALE;
         const baseCellX = cx * cs;
@@ -1585,79 +2002,193 @@
           }
         }
 
-        // scatter props
-        const randTree = seededChunkRand(cx, cy, 0xC0FFEE);
-        const randRock = seededChunkRand(cx, cy, 0xBADC0DE);
+        // Decoration: clutter + tree variations (instanced for performance)
+        const colliders = [];
+        const rand = seededChunkRand(cx, cy, 0xDEC0A);
+        const PROP_WORLD_SCALE = 3.2;
+        const TREE_WORLD_SCALE = 7.0;
 
-        const trunk = new THREE.InstancedMesh(sharedGeo.trunk, shared.trunkMat, 512);
-        const leaf = new THREE.InstancedMesh(sharedGeo.leaf, shared.leafMat, 512);
-        const rock = new THREE.InstancedMesh(sharedGeo.rock, shared.rockMat, 512);
-        trunk.castShadow = true; trunk.receiveShadow = false;
-        leaf.castShadow = true; leaf.receiveShadow = false;
-        rock.castShadow = true; rock.receiveShadow = true;
+        // Clutter placements
+        const clutter = new Map(); // assetId -> placements
+        const clutterAttempts = Math.floor(cs * cs * 0.16 * DECOR.clutterDensity);
+        for(let n=0;n<clutterAttempts;n++){
+          const lx = Math.floor(rand() * cs);
+          const ly = Math.floor(rand() * cs);
+          const cellX = baseCellX + lx;
+          const cellY = baseCellY + ly;
+          const b = WORLD.biomemap[idxOf(cellX, cellY)];
+          if(b === BIOME.OCEAN) continue;
+          const list = BIOME_DECOR[b];
+          if(!list) continue;
+          const assetId = pickWeighted(list, rand());
+          const arr = clutter.get(assetId) || [];
+          arr.push({
+            cellX,
+            cellY,
+            ox: rand(),
+            oy: rand(),
+            yaw: rand() * Math.PI * 2,
+            s: 0.85 + rand() * 0.55
+          });
+          clutter.set(assetId, arr);
+        }
+
+        // Trees (10 preset variations)
+        const treePlacements = [];
+        const treeRand = seededChunkRand(cx, cy, 0x7A11);
+        const treeAttempts = Math.floor(cs * cs * 0.055 * DECOR.treeDensity);
+        for(let n=0;n<treeAttempts;n++){
+          const lx = Math.floor(treeRand() * cs);
+          const ly = Math.floor(treeRand() * cs);
+          const cellX = baseCellX + lx;
+          const cellY = baseCellY + ly;
+          const b = WORLD.biomemap[idxOf(cellX, cellY)];
+          if(b !== BIOME.FOREST && b !== BIOME.PLAINS && b !== BIOME.TUNDRA) continue;
+          // make forests denser, plains sparse, tundra sparse
+          const keep = (b === BIOME.FOREST) ? 0.70 : (b === BIOME.PLAINS ? 0.18 : 0.12);
+          if(treeRand() > keep) continue;
+          treePlacements.push({
+            cellX,
+            cellY,
+            ox: treeRand(),
+            oy: treeRand(),
+            yaw: treeRand() * Math.PI * 2,
+            preset: (treeRand() * TREE_PRESETS.length) | 0,
+            s: 0.85 + treeRand() * 0.55
+          });
+        }
 
         const mat4 = new THREE.Matrix4();
         const quat = new THREE.Quaternion();
-        const scale = new THREE.Vector3();
+        const quat2 = new THREE.Quaternion();
+        const scaleV = new THREE.Vector3();
         const posV = new THREE.Vector3();
-        let tCount = 0, rCount = 0;
 
-        for(let y=0;y<cs;y++){
-          for(let x=0;x<cs;x++){
-            const cellX = baseCellX + x + 0.5;
-            const cellY = baseCellY + y + 0.5;
-            const wx = cellToWorld(cellX);
-            const wz = cellToWorld(cellY);
-            const b = biomeAtWorld(wx, wz);
-            if(b === BIOME.FOREST){
-              if(randTree() < 0.08){
-                const hh = sampleElevationAtWorld(wx, wz);
-                const yaw = randTree() * Math.PI * 2;
-                quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
-                posV.set(wx, hh, wz);
-                // trunk
-                scale.set(1, 0.9 + randTree()*0.5, 1);
-                mat4.compose(posV.clone().add(new THREE.Vector3(0, 0.6*scale.y, 0)), quat, new THREE.Vector3(1, scale.y, 1));
-                if(tCount < trunk.count){
-                  trunk.setMatrixAt(tCount, mat4);
-                }
-                // leaf
-                scale.set(1, 0.85 + randTree()*0.5, 1);
-                mat4.compose(posV.clone().add(new THREE.Vector3(0, 1.7*scale.y, 0)), quat, new THREE.Vector3(1, scale.y, 1));
-                if(tCount < leaf.count){
-                  leaf.setMatrixAt(tCount, mat4);
-                }
-                tCount++;
-              }
-            }else if(b === BIOME.DESERT){
-              if(randRock() < 0.05){
-                const hh = sampleElevationAtWorld(wx, wz);
-                const yaw = randRock() * Math.PI * 2;
-                quat.setFromAxisAngle(new THREE.Vector3(0,1,0), yaw);
-                const s = 0.5 + randRock()*0.9;
-                posV.set(wx, hh + 0.15*s, wz);
-                mat4.compose(posV, quat, new THREE.Vector3(s, s, s));
-                if(rCount < rock.count) rock.setMatrixAt(rCount, mat4);
-                rCount++;
-              }
+        // Build clutter instanced meshes
+        const clutterMeshes = [];
+        for(const [assetId, arr] of clutter){
+          const def = DECOR_DEFS[assetId];
+          if(!def || arr.length === 0) continue;
+          const inst = new THREE.InstancedMesh(def.geom, def.mat, arr.length);
+          inst.castShadow = def.castShadow;
+          inst.receiveShadow = def.receiveShadow;
+          for(let i=0;i<arr.length;i++){
+            const p = arr[i];
+            const wx = cellToWorld(p.cellX + p.ox);
+            const wz = cellToWorld(p.cellY + p.oy);
+            const h01 = WORLD.heightmap[idxOf(p.cellX, p.cellY)];
+            const b = WORLD.biomemap[idxOf(p.cellX, p.cellY)];
+            const y = heightToElevationUnits(h01, b) + def.yOffset;
+            posV.set(wx, y, wz);
+            quat.setFromAxisAngle(new THREE.Vector3(0,1,0), p.yaw);
+            // some "models" look better laid down
+            if(assetId.includes("_log") || assetId.includes("driftwood")){
+              quat2.setFromAxisAngle(new THREE.Vector3(0,0,1), Math.PI * 0.5);
+              quat.multiply(quat2);
+            }
+            const s = def.baseScale * PROP_WORLD_SCALE * p.s * (1 + (rand() - 0.5) * def.scaleJitter);
+            scaleV.set(s, s, s);
+            mat4.compose(posV, quat, scaleV);
+            inst.setMatrixAt(i, mat4);
+            if(DECOR.collisions && def.collider > 0){
+              colliders.push({ x: wx, z: wz, r: def.collider * s });
             }
           }
+          inst.instanceMatrix.needsUpdate = true;
+          clutterMeshes.push(inst);
         }
 
-        trunk.count = Math.min(tCount, 512);
-        leaf.count = Math.min(tCount, 512);
-        rock.count = Math.min(rCount, 512);
-        trunk.instanceMatrix.needsUpdate = true;
-        leaf.instanceMatrix.needsUpdate = true;
-        rock.instanceMatrix.needsUpdate = true;
+        // Build trees as instanced meshes: one trunk + 3 canopy types
+        const treeMeshes = [];
+        if(treePlacements.length){
+          treeMats.leaf.vertexColors = true;
+          const trunk = new THREE.InstancedMesh(treeGeo.trunk, treeMats.trunk, treePlacements.length);
+          const canopyCone = new THREE.InstancedMesh(treeGeo.canopyCone, treeMats.leaf, treePlacements.length);
+          const canopyIco = new THREE.InstancedMesh(treeGeo.canopyIco, treeMats.leaf, treePlacements.length);
+          const canopySphere = new THREE.InstancedMesh(treeGeo.canopySphere, treeMats.leaf, treePlacements.length);
+          trunk.castShadow = true; trunk.receiveShadow = false;
+          canopyCone.castShadow = true; canopyCone.receiveShadow = false;
+          canopyIco.castShadow = true; canopyIco.receiveShadow = false;
+          canopySphere.castShadow = true; canopySphere.receiveShadow = false;
+
+          const leafColor = new THREE.Color();
+          let coneCount = 0, icoCount = 0, sphCount = 0;
+          for(let i=0;i<treePlacements.length;i++){
+            const p = treePlacements[i];
+            const wx = cellToWorld(p.cellX + p.ox);
+            const wz = cellToWorld(p.cellY + p.oy);
+            const h01 = WORLD.heightmap[idxOf(p.cellX, p.cellY)];
+            const b = WORLD.biomemap[idxOf(p.cellX, p.cellY)];
+            const ground = heightToElevationUnits(h01, b);
+
+            const preset = TREE_PRESETS[p.preset] || TREE_PRESETS[0];
+            const base = TREE_WORLD_SCALE * p.s;
+            quat.setFromAxisAngle(new THREE.Vector3(0,1,0), p.yaw);
+
+            // trunk (geometry height 1.6)
+            const trunkH = 1.6 * preset.trunkY * base;
+            posV.set(wx, ground + trunkH * 0.5, wz);
+            scaleV.set(preset.trunkW * base, preset.trunkY * base, preset.trunkW * base);
+            mat4.compose(posV, quat, scaleV);
+            trunk.setMatrixAt(i, mat4);
+
+            // canopy
+            const canopyType = preset.canopy;
+            const canopyGeomH = (canopyType === 0) ? 2.2 : (canopyType === 1 ? 1.9 : 1.7);
+            const canopyH = canopyGeomH * preset.canopyH * base;
+            posV.set(wx, ground + trunkH + canopyH * 0.45, wz);
+            scaleV.set(preset.canopyW * base, preset.canopyH * base, preset.canopyW * base);
+            mat4.compose(posV, quat, scaleV);
+
+            // leaf color variation per tree
+            leafColor.setHex(preset.leaf);
+            const jitter = (treeRand() - 0.5) * 0.12;
+            leafColor.offsetHSL(jitter, 0, (treeRand() - 0.5) * 0.06);
+
+            if(canopyType === 0){
+              canopyCone.setMatrixAt(coneCount, mat4);
+              canopyCone.setColorAt(coneCount, leafColor);
+              coneCount++;
+            }else if(canopyType === 1){
+              canopyIco.setMatrixAt(icoCount, mat4);
+              canopyIco.setColorAt(icoCount, leafColor);
+              icoCount++;
+            }else{
+              canopySphere.setMatrixAt(sphCount, mat4);
+              canopySphere.setColorAt(sphCount, leafColor);
+              sphCount++;
+            }
+
+            // collision around the trunk
+            if(DECOR.collisions){
+              const r = 0.55 * base;
+              colliders.push({ x: wx, z: wz, r });
+            }
+          }
+
+          trunk.instanceMatrix.needsUpdate = true;
+          canopyCone.count = coneCount;
+          canopyIco.count = icoCount;
+          canopySphere.count = sphCount;
+          canopyCone.instanceMatrix.needsUpdate = true;
+          canopyIco.instanceMatrix.needsUpdate = true;
+          canopySphere.instanceMatrix.needsUpdate = true;
+          canopyCone.instanceColor && (canopyCone.instanceColor.needsUpdate = true);
+          canopyIco.instanceColor && (canopyIco.instanceColor.needsUpdate = true);
+          canopySphere.instanceColor && (canopySphere.instanceColor.needsUpdate = true);
+
+          treeMeshes.push(trunk);
+          if(coneCount) treeMeshes.push(canopyCone);
+          if(icoCount) treeMeshes.push(canopyIco);
+          if(sphCount) treeMeshes.push(canopySphere);
+        }
 
         const group = new THREE.Group();
         group.add(mesh);
         if(water) group.add(water);
-        if(trunk.count > 0) group.add(trunk);
-        if(leaf.count > 0) group.add(leaf);
-        if(rock.count > 0) group.add(rock);
-        group.userData = { cx, cy, mesh, water, trunk, leaf, rock };
+        for(const m of clutterMeshes) group.add(m);
+        for(const m of treeMeshes) group.add(m);
+        group.userData = { cx, cy, mesh, water, colliders };
         return group;
       }
 
@@ -1746,6 +2277,37 @@
         player.pos.x += vx * dt;
         player.pos.z += vz * dt;
 
+        // Lightweight collisions against nearby decoration (XZ only)
+        if(DECOR.collisions && chunks.map.size){
+          const playerR = 0.55;
+          const chunkWorld = chunks.size * CELL_SCALE;
+          const pcx = Math.floor(player.pos.x / chunkWorld);
+          const pcy = Math.floor(player.pos.z / chunkWorld);
+          for(let dy=-1;dy<=1;dy++){
+            for(let dx=-1;dx<=1;dx++){
+              const key = chunkKey(pcx + dx, pcy + dy);
+              const group = chunks.map.get(key);
+              if(!group || !group.userData || !group.userData.colliders) continue;
+              const cols = group.userData.colliders;
+              for(let i=0;i<cols.length;i++){
+                const c = cols[i];
+                const dx2 = player.pos.x - c.x;
+                const dz2 = player.pos.z - c.z;
+                const d = Math.hypot(dx2, dz2);
+                const minD = playerR + c.r;
+                if(d > 0.0001 && d < minD){
+                  const push = (minD - d) / d;
+                  player.pos.x += dx2 * push;
+                  player.pos.z += dz2 * push;
+                }else if(d <= 0.0001){
+                  player.pos.x += (Math.random() - 0.5) * 0.2;
+                  player.pos.z += (Math.random() - 0.5) * 0.2;
+                }
+              }
+            }
+          }
+        }
+
         // Gravity toward terrain
         const groundY = sampleElevationAtWorld(player.pos.x, player.pos.z) + player.eyeHeight;
         const g = 28;
@@ -1766,6 +2328,7 @@
       function tickExplore(){
         if(!explore.running) return;
         const dt = Math.min(0.05, explore.clock.getDelta());
+        shaderTime.value = performance.now() * 0.001;
 
         if(!player.isLocked){
           lockprompt.style.display = "block";
@@ -1847,6 +2410,9 @@
       (function boot(){
         setBrushRadius(16);
         setTool("raise");
+        setDecorUI();
+        treeDensityEl.value = String(DECOR.treeDensity);
+        clutterDensityEl.value = String(DECOR.clutterDensity);
         const seed = (Math.random() * 1e9) | 0;
         seedBadge.textContent = String(seed >>> 0);
         generateWorld(seed);
